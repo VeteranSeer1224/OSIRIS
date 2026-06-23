@@ -1,0 +1,14 @@
+{
+  "target": "example.com",
+  "cards": [
+    {
+      "entity": "admin@example.com",
+      "risk_score": 72,
+      "top_features": [
+        { "feature": "breach_appearance_count", "contribution": "+0.41", "plain_language": "Appeared in 3 known data breaches" }
+      ],
+      "fairness_check": { "passed": true, "notes": "No disparity detected across tested name-origin variants" },
+      "robustness_check": { "passed": true, "notes": "Score stable under minor input perturbation" }
+    }
+  ]
+}

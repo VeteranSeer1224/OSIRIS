@@ -1,0 +1,24 @@
+{
+  "target": "example.com",
+  "profile": {
+    "identity": "string summary",
+    "geo_temporal": "string summary",
+    "ocean_psychology": {
+      "openness": 0.4,
+      "conscientiousness": 0.7,
+      "...": "..."
+    },
+    "technical_stack": ["nginx", "wordpress"],
+    "ideology": "string summary or null",
+    "opsec_posture": "string summary"
+  },
+  "risk_score": 72,
+  "risk_features": [
+    { "feature": "breach_appearance_count", "value": 3, "weight": 0.41 },
+    { "feature": "domain_age_days", "value": 5840, "weight": -0.12 }
+  ],
+  "model_metadata": {
+    "model_name": "gpt-4.1 / local-llama / etc",
+    "prompt_version": "v1"
+  }
+}
