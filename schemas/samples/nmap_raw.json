@@ -1,0 +1,206 @@
+{
+  "target": "scanme.nmap.org",
+  "scan_date": "2026-06-24T07:56:27Z",
+  "entities": [
+    {
+      "type": "domain",
+      "value": "1e100.net"
+    },
+    {
+      "type": "ip",
+      "value": "2404:6800:4000:1025::1a"
+    },
+    {
+      "type": "ip",
+      "value": "2404:6800:4008:c01::1a"
+    },
+    {
+      "type": "ip",
+      "value": "2404:6800:400b:c01b::1a"
+    },
+    {
+      "type": "ip",
+      "value": "2404:6800:400b:c01b::1b"
+    },
+    {
+      "type": "ip",
+      "value": "2600:14c0:6::2"
+    },
+    {
+      "type": "ip",
+      "value": "2600:14c0:6::3"
+    },
+    {
+      "type": "ip",
+      "value": "2600:14c0:7::2"
+    },
+    {
+      "type": "ip",
+      "value": "2600:14c0:7::3"
+    },
+    {
+      "type": "ip",
+      "value": "2600:14c0:7::4"
+    },
+    {
+      "type": "ip",
+      "value": "2600:3c01::f03c:91ff:fe18:bb2f"
+    },
+    {
+      "type": "ip",
+      "value": "45.33.32.156"
+    },
+    {
+      "type": "email",
+      "value": "abuse@dynadot.com"
+    },
+    {
+      "type": "email",
+      "value": "abusecomplaints@markmonitor.com"
+    },
+    {
+      "type": "domain",
+      "value": "akashield.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "alt1.aspmx.l.google.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "alt2.aspmx.l.google.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "aspmx.l.google.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "aspmx2.googlemail.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "aspmx3.googlemail.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "c1-2.akashield.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "c1-3.akashield.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "c2-2.akashield.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "c2-3.akashield.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "c2-4.akashield.net"
+    },
+    {
+      "type": "domain",
+      "value": "google.com"
+    },
+    {
+      "type": "domain",
+      "value": "googlemail.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "lcbomp-in-f26.1e100.net"
+    },
+    {
+      "type": "domain",
+      "value": "linode.com"
+    },
+    {
+      "type": "domain",
+      "value": "nmap.org"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns1.linode.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns2.linode.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns3.linode.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns4.linode.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns5.linode.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "scanme.nmap.org"
+    },
+    {
+      "type": "subdomain",
+      "value": "tp-in-f26.1e100.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "tp-in-f27.1e100.net"
+    },
+    {
+      "type": "email",
+      "value": "whoisrequest@markmonitor.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "yunrtab-in-f26.1e100.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "yunrtab-in-f27.1e100.net"
+    }
+  ],
+  "events": [
+    {
+      "date": "2009-09-25",
+      "type": "domain_registered",
+      "entity": "1e100.net"
+    },
+    {
+      "date": "2024-05-08",
+      "type": "domain_registered",
+      "entity": "akashield.net"
+    },
+    {
+      "date": "1997-09-15",
+      "type": "domain_registered",
+      "entity": "google.com"
+    },
+    {
+      "date": "2001-07-18",
+      "type": "domain_registered",
+      "entity": "googlemail.com"
+    },
+    {
+      "date": "2003-01-26",
+      "type": "domain_registered",
+      "entity": "linode.com"
+    },
+    {
+      "date": "1999-01-18",
+      "type": "domain_registered",
+      "entity": "nmap.org"
+    }
+  ],
+  "raw_module_output": {
+    "note": "untouched SpiderFoot export, kept for audit trail",
+    "raw_record_count": 104
+  }
+}
