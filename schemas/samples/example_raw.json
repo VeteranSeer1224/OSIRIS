@@ -1,0 +1,82 @@
+{
+  "target": "example.com",
+  "scan_date": "2026-06-24T07:56:26Z",
+  "entities": [
+    {
+      "type": "ip",
+      "value": "104.20.23.154"
+    },
+    {
+      "type": "ip",
+      "value": "172.66.147.243"
+    },
+    {
+      "type": "ip",
+      "value": "2606:4700:10::6814:179a"
+    },
+    {
+      "type": "ip",
+      "value": "2606:4700:10::ac42:93f3"
+    },
+    {
+      "type": "ip",
+      "value": "2606:4700:50::adf5:3aa2"
+    },
+    {
+      "type": "ip",
+      "value": "2606:4700:58::a29f:2ce4"
+    },
+    {
+      "type": "ip",
+      "value": "2803:f800:50::6ca2:c0a2"
+    },
+    {
+      "type": "ip",
+      "value": "2803:f800:50::6ca2:c3e4"
+    },
+    {
+      "type": "ip",
+      "value": "2a06:98c1:50::ac40:20a2"
+    },
+    {
+      "type": "ip",
+      "value": "2a06:98c1:50::ac40:23e4"
+    },
+    {
+      "type": "domain",
+      "value": "cloudflare.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "elliott.ns.cloudflare.com"
+    },
+    {
+      "type": "domain",
+      "value": "example.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "hera.ns.cloudflare.com"
+    },
+    {
+      "type": "email",
+      "value": "registrar-abuse@cloudflare.com"
+    }
+  ],
+  "events": [
+    {
+      "date": "2009-02-17",
+      "type": "domain_registered",
+      "entity": "cloudflare.com"
+    },
+    {
+      "date": "1995-08-14",
+      "type": "domain_registered",
+      "entity": "example.com"
+    }
+  ],
+  "raw_module_output": {
+    "note": "untouched SpiderFoot export, kept for audit trail",
+    "raw_record_count": 50
+  }
+}

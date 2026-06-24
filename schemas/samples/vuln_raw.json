@@ -1,0 +1,303 @@
+{
+  "target": "testphp.vulnweb.com",
+  "scan_date": "2026-06-24T07:56:28Z",
+  "entities": [
+    {
+      "type": "domain",
+      "value": "1e100.net"
+    },
+    {
+      "type": "ip",
+      "value": "2404:6800:4000:1025::1a"
+    },
+    {
+      "type": "ip",
+      "value": "2404:6800:4008:c01::1b"
+    },
+    {
+      "type": "ip",
+      "value": "2404:6800:400b:c01b::1a"
+    },
+    {
+      "type": "ip",
+      "value": "2600:9000:5300:1b00::1"
+    },
+    {
+      "type": "ip",
+      "value": "2600:9000:5300:8800::1"
+    },
+    {
+      "type": "ip",
+      "value": "2600:9000:5302:2d00::1"
+    },
+    {
+      "type": "ip",
+      "value": "2600:9000:5303:c700::1"
+    },
+    {
+      "type": "ip",
+      "value": "2600:9000:5305:2900::1"
+    },
+    {
+      "type": "ip",
+      "value": "2600:9000:5305:aa00::1"
+    },
+    {
+      "type": "ip",
+      "value": "2600:9000:5306:3400::1"
+    },
+    {
+      "type": "ip",
+      "value": "2600:9000:5306:8600::1"
+    },
+    {
+      "type": "ip",
+      "value": "2607:f8b0:400e:c1e::1b"
+    },
+    {
+      "type": "ip",
+      "value": "2607:f8b0:4023:1c05::1b"
+    },
+    {
+      "type": "ip",
+      "value": "44.228.249.3"
+    },
+    {
+      "type": "email",
+      "value": "abuse@support.gandi.net"
+    },
+    {
+      "type": "email",
+      "value": "abusecomplaints@markmonitor.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "alt1.aspmx.l.google.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "alt2.aspmx.l.google.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "alt3.aspmx.l.google.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "alt4.aspmx.l.google.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "amazon-smtp.amazon.com"
+    },
+    {
+      "type": "domain",
+      "value": "amazon.com"
+    },
+    {
+      "type": "domain",
+      "value": "amazonaws.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "aspmx.l.google.com"
+    },
+    {
+      "type": "domain",
+      "value": "awsdns-03.com"
+    },
+    {
+      "type": "domain",
+      "value": "awsdns-05.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "awsdns-06.co.uk"
+    },
+    {
+      "type": "subdomain",
+      "value": "awsdns-16.co.uk"
+    },
+    {
+      "type": "domain",
+      "value": "awsdns-17.com"
+    },
+    {
+      "type": "domain",
+      "value": "awsdns-37.org"
+    },
+    {
+      "type": "domain",
+      "value": "awsdns-53.org"
+    },
+    {
+      "type": "domain",
+      "value": "awsdns-56.net"
+    },
+    {
+      "type": "email",
+      "value": "e7c92ba29faca2e997bfc9ce58d5c661-57148476@contact.gandi.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "ec2-44-228-249-3.us-west-2.compute.amazonaws.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "ec2-98-82-161-185.compute-1.amazonaws.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "ec2-98-87-170-71.compute-1.amazonaws.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "ec2-98-87-170-74.compute-1.amazonaws.com"
+    },
+    {
+      "type": "domain",
+      "value": "google.com"
+    },
+    {
+      "type": "email",
+      "value": "hostmaster@amazon.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "lcbomp-in-f26.1e100.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns-1321.awsdns-37.org"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns-136.awsdns-17.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns-1450.awsdns-53.org"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns-1588.awsdns-06.co.uk"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns-1670.awsdns-16.co.uk"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns-27.awsdns-03.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns-557.awsdns-05.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "ns-967.awsdns-56.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "smtp01.us-west-2.mail-perimeter.amazon.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "testphp.vulnweb.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "tp-in-f27.1e100.net"
+    },
+    {
+      "type": "domain",
+      "value": "vulnweb.com"
+    },
+    {
+      "type": "email",
+      "value": "whoisrequest@markmonitor.com"
+    },
+    {
+      "type": "subdomain",
+      "value": "yudlsqd-in-f26.1e100.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "yudlsqd-in-f27.1e100.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "yunrtab-in-f26.1e100.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "yurnoyc-in-f26.1e100.net"
+    },
+    {
+      "type": "subdomain",
+      "value": "yurnoyc-in-f27.1e100.net"
+    }
+  ],
+  "events": [
+    {
+      "date": "2009-09-25",
+      "type": "domain_registered",
+      "entity": "1e100.net"
+    },
+    {
+      "date": "1994-11-01",
+      "type": "domain_registered",
+      "entity": "amazon.com"
+    },
+    {
+      "date": "2005-08-18",
+      "type": "domain_registered",
+      "entity": "amazonaws.com"
+    },
+    {
+      "date": "2010-10-21",
+      "type": "domain_registered",
+      "entity": "awsdns-03.com"
+    },
+    {
+      "date": "2010-10-21",
+      "type": "domain_registered",
+      "entity": "awsdns-05.net"
+    },
+    {
+      "date": "2010-10-21",
+      "type": "domain_registered",
+      "entity": "awsdns-17.com"
+    },
+    {
+      "date": "2010-10-21",
+      "type": "domain_registered",
+      "entity": "awsdns-56.net"
+    },
+    {
+      "date": "1997-09-15",
+      "type": "domain_registered",
+      "entity": "google.com"
+    },
+    {
+      "date": "2010-06-14",
+      "type": "domain_registered",
+      "entity": "vulnweb.com"
+    },
+    {
+      "date": "2010-10-21",
+      "type": "domain_registered",
+      "entity": "awsdns-37.org"
+    },
+    {
+      "date": "2010-10-21",
+      "type": "domain_registered",
+      "entity": "awsdns-53.org"
+    }
+  ],
+  "raw_module_output": {
+    "note": "untouched SpiderFoot export, kept for audit trail",
+    "raw_record_count": 183
+  }
+}

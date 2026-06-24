@@ -1,0 +1,110 @@
+Updated,Type,Module,Source,F/P,Data
+2026-06-24 07:33:17,AFFILIATE_DOMAIN_WHOIS,sfp_whois,cloudflare.com,0,"   Domain Name: CLOUDFLARE.COM
+   Registry Domain ID: 1542998887_DOMAIN_COM-VRSN
+   Registrar WHOIS Server: whois.cloudflare.com
+   Registrar URL: http://www.cloudflare.com
+   Updated Date: 2024-01-09T16:45:28Z
+   Creation Date: 2009-02-17T22:07:54Z
+   Registry Expiry Date: 2033-02-17T22:07:54Z
+   Registrar: Cloudflare, Inc.
+   Registrar IANA ID: 1910
+   Registrar Abuse Contact Email: registrar-abuse@cloudflare.com
+   Registrar Abuse Contact Phone: +1.6503198930
+   Domain Status: clientDeleteProhibited https://icann.org/epp#clientDeleteProhibited
+   Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+   Domain Status: clientUpdateProhibited https://icann.org/epp#clientUpdateProhibited
+   Domain Status: serverDeleteProhibited https://icann.org/epp#serverDeleteProhibited
+   Domain Status: serverTransferProhibited https://icann.org/epp#serverTransferProhibited
+   Domain Status: serverUpdateProhibited https://icann.org/epp#serverUpdateProhibited
+   Name Server: "
+2026-06-24 07:33:16,DOMAIN_WHOIS,sfp_whois,example.com,0,"   Domain Name: EXAMPLE.COM
+   Registry Domain ID: 2336799_DOMAIN_COM-VRSN
+   Registrar WHOIS Server: whois.iana.org
+   Registrar URL: http://res-dom.iana.org
+   Updated Date: 2026-01-16T18:26:50Z
+   Creation Date: 1995-08-14T04:00:00Z
+   Registry Expiry Date: 2026-08-13T04:00:00Z
+   Registrar: RESERVED-Internet Assigned Numbers Authority
+   Registrar IANA ID: 376
+   Registrar Abuse Contact Email:
+   Registrar Abuse Contact Phone:
+   Domain Status: clientDeleteProhibited https://icann.org/epp#clientDeleteProhibited
+   Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+   Domain Status: clientUpdateProhibited https://icann.org/epp#clientUpdateProhibited
+   Name Server: ELLIOTT.NS.CLOUDFLARE.COM
+   Name Server: HERA.NS.CLOUDFLARE.COM
+   DNSSEC: signedDelegation
+   DNSSEC DS Data: 2371 13 2 C988EC423E3880EB8DD8A46FE06CA230EE23F35B578D64E78B29C3E1C83D245A
+   URL of the ICANN Whois Inaccuracy Complaint Form: https://www.icann.org/wicf/
+>>> Last update of whois"
+2026-06-24 07:33:16,IP_ADDRESS,sfp_dnsresolve,example.com,0,104.20.23.154
+2026-06-24 07:33:17,AFFILIATE_IPADDR,sfp_dnsresolve,hera.ns.cloudflare.com,0,108.162.192.162
+2026-06-24 07:33:17,AFFILIATE_IPADDR,sfp_dnsresolve,elliott.ns.cloudflare.com,0,108.162.195.228
+2026-06-24 07:33:17,AFFILIATE_IPADDR,sfp_dnsresolve,elliott.ns.cloudflare.com,0,162.159.44.228
+2026-06-24 07:33:17,AFFILIATE_IPADDR,sfp_dnsresolve,hera.ns.cloudflare.com,0,172.64.32.162
+2026-06-24 07:33:17,AFFILIATE_IPADDR,sfp_dnsresolve,elliott.ns.cloudflare.com,0,172.64.35.228
+2026-06-24 07:33:16,IP_ADDRESS,sfp_dnsresolve,example.com,0,172.66.147.243
+2026-06-24 07:33:17,AFFILIATE_IPADDR,sfp_dnsresolve,hera.ns.cloudflare.com,0,173.245.58.162
+2026-06-24 07:33:16,IPV6_ADDRESS,sfp_dnsresolve,example.com,0,2606:4700:10::6814:179a
+2026-06-24 07:33:16,IPV6_ADDRESS,sfp_dnsresolve,example.com,0,2606:4700:10::ac42:93f3
+2026-06-24 07:33:17,AFFILIATE_IPV6_ADDRESS,sfp_dnsresolve,hera.ns.cloudflare.com,0,2606:4700:50::adf5:3aa2
+2026-06-24 07:33:17,AFFILIATE_IPV6_ADDRESS,sfp_dnsresolve,elliott.ns.cloudflare.com,0,2606:4700:58::a29f:2ce4
+2026-06-24 07:33:17,AFFILIATE_IPV6_ADDRESS,sfp_dnsresolve,hera.ns.cloudflare.com,0,2803:f800:50::6ca2:c0a2
+2026-06-24 07:33:17,AFFILIATE_IPV6_ADDRESS,sfp_dnsresolve,elliott.ns.cloudflare.com,0,2803:f800:50::6ca2:c3e4
+2026-06-24 07:33:17,AFFILIATE_IPV6_ADDRESS,sfp_dnsresolve,hera.ns.cloudflare.com,0,2a06:98c1:50::ac40:20a2
+2026-06-24 07:33:16,AFFILIATE_IPV6_ADDRESS,sfp_dnsresolve,elliott.ns.cloudflare.com,0,2a06:98c1:50::ac40:23e4
+2026-06-24 07:33:17,PUBLIC_CODE_REPO,sfp_github,example.com,0,"Name: example
+URL: https://github.com/cake-build/example
+Description: Cake example repository"
+2026-06-24 07:33:17,PUBLIC_CODE_REPO,sfp_github,example.com,0,"Name: example
+URL: https://github.com/golang/example
+Description: Go example projects"
+2026-06-24 07:33:16,DOMAIN_REGISTRAR,sfp_whois,example.com,0,RESERVED-Internet Assigned Numbers Authority
+2026-06-24 07:33:15,DNS_TEXT,sfp_dnsraw,example.com,0,_k2n1y4vw3qtb4skdx9e7dxt97qrmmq9
+2026-06-24 07:33:17,AFFILIATE_DOMAIN_NAME,sfp_dnsresolve,hera.ns.cloudflare.com,0,cloudflare.com
+2026-06-24 07:33:16,AFFILIATE_DOMAIN_NAME,sfp_dnsresolve,elliott.ns.cloudflare.com,0,cloudflare.com
+2026-06-24 07:33:17,AFFILIATE_DOMAIN_NAME,sfp_dnsresolve,elliott.ns.cloudflare.com,0,cloudflare.com
+2026-06-24 07:33:18,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,2606:4700:58::a29f:2ce4,0,elliott.ns.cloudflare.com
+2026-06-24 07:33:18,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,162.159.44.228,0,elliott.ns.cloudflare.com
+2026-06-24 07:33:18,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,2803:f800:50::6ca2:c3e4,0,elliott.ns.cloudflare.com
+2026-06-24 07:33:18,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,108.162.195.228,0,elliott.ns.cloudflare.com
+2026-06-24 07:33:18,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,172.64.35.228,0,elliott.ns.cloudflare.com
+2026-06-24 07:33:17,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,2a06:98c1:50::ac40:23e4,0,elliott.ns.cloudflare.com
+2026-06-24 07:33:15,PROVIDER_DNS,sfp_dnsraw,example.com,0,elliott.ns.cloudflare.com
+2026-06-24 07:33:15,AFFILIATE_INTERNET_NAME,sfp_dnsraw,example.com,0,elliott.ns.cloudflare.com
+2026-06-24 07:33:15,INTERNET_NAME,SpiderFoot UI,example.com,0,example.com
+2026-06-24 07:33:15,DOMAIN_NAME,SpiderFoot UI,example.com,0,example.com
+2026-06-24 07:33:16,DOMAIN_NAME,sfp_dnsresolve,example.com,0,example.com
+2026-06-24 07:33:15,RAW_DNS_RECORDS,sfp_dnsraw,example.com,0,example.com. 111 IN MX 0 .
+2026-06-24 07:33:15,RAW_DNS_RECORDS,sfp_dnsraw,example.com,0,"example.com. 21600 IN NS hera.ns.cloudflare.com.
+example.com. 21600 IN NS elliott.ns.cloudflare.com."
+2026-06-24 07:33:15,RAW_DNS_RECORDS,sfp_dnsraw,example.com,0,"example.com. 300 IN TXT ""_k2n1y4vw3qtb4skdx9e7dxt97qrmmq9""
+example.com. 300 IN TXT ""v=spf1 -all"""
+2026-06-24 07:33:18,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,108.162.192.162,0,hera.ns.cloudflare.com
+2026-06-24 07:33:19,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,172.64.32.162,0,hera.ns.cloudflare.com
+2026-06-24 07:33:19,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,2803:f800:50::6ca2:c0a2,0,hera.ns.cloudflare.com
+2026-06-24 07:33:19,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,173.245.58.162,0,hera.ns.cloudflare.com
+2026-06-24 07:33:19,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,2a06:98c1:50::ac40:20a2,0,hera.ns.cloudflare.com
+2026-06-24 07:33:18,AFFILIATE_INTERNET_NAME,sfp_dnsresolve,2606:4700:50::adf5:3aa2,0,hera.ns.cloudflare.com
+2026-06-24 07:33:15,PROVIDER_DNS,sfp_dnsraw,example.com,0,hera.ns.cloudflare.com
+2026-06-24 07:33:16,AFFILIATE_INTERNET_NAME,sfp_dnsraw,example.com,0,hera.ns.cloudflare.com
+2026-06-24 07:33:17,AFFILIATE_EMAILADDR,sfp_email,"   Domain Name: CLOUDFLARE.COM
+   Registry Domain ID: 1542998887_DOMAIN_COM-VRSN
+   Registrar WHOIS Server: whois.cloudflare.com
+   Registrar URL: http://www.cloudflare.com
+   Updated Date: 2024-01-09T16:45:28Z
+   Creation Date: 2009-02-17T22:07:54Z
+   Registry Expiry Date: 2033-02-17T22:07:54Z
+   Registrar: Cloudflare, Inc.
+   Registrar IANA ID: 1910
+   Registrar Abuse Contact Email: registrar-abuse@cloudflare.com
+   Registrar Abuse Contact Phone: +1.6503198930
+   Domain Status: clientDeleteProhibited https://icann.org/epp#clientDeleteProhibited
+   Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+   Domain Status: clientUpdateProhibited https://icann.org/epp#clientUpdateProhibited
+   Domain Status: serverDeleteProhibited https://icann.org/epp#serverDeleteProhibited
+   Domain Status: serverTransferProhibited https://icann.org/epp#serverTransferProhibited
+   Domain Status: serverUpdateProhibited https://icann.org/epp#serverUpdateProhibited
+   Name Server: ",0,registrar-abuse@cloudflare.com
+2026-06-24 07:33:15,DNS_TEXT,sfp_dnsraw,example.com,0,v=spf1 -all
+2026-06-24 07:33:15,DNS_SPF,sfp_dnsraw,example.com,0,v=spf1 -all
