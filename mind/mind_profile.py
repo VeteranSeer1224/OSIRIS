@@ -1,0 +1,757 @@
+#!/usr/bin/env python3
+"""
+OSIRIS-Mind  —  Stage 2: AI Profiling & Risk Scoring
+Person B's primary deliverable.
+
+Usage:
+    python mind_profile.py --input raw_scan.json --output dossier.json
+    python mind_profile.py --input raw_scan.json --output dossier.json --prompt v2
+    python mind_profile.py --input raw_scan.json --output dossier.json --backend ollama
+    python mind_profile.py --regression              # run regression suite
+
+Environment variables:
+    DEEPSEEK_API_KEY    — required for backend=deepseek (default)
+    OPENAI_API_KEY      — required for backend=openai
+    ANTHROPIC_API_KEY   — required for backend=anthropic
+    OLLAMA_HOST         — defaults to http://localhost:11434
+    OLLAMA_MODEL        — defaults to llama3.2
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import re
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# ── optional heavy deps — fail gracefully so unit tests can import without them
+try:
+    import openai as _openai_sdk
+    _OPENAI_AVAILABLE = True
+except ImportError:
+    _OPENAI_AVAILABLE = False
+
+try:
+    import anthropic as _anthropic_sdk
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    _ANTHROPIC_AVAILABLE = False
+
+try:
+    import requests as _requests
+    _REQUESTS_AVAILABLE = True
+except ImportError:
+    _REQUESTS_AVAILABLE = False
+
+# ── project paths
+_HERE = Path(__file__).parent
+_PROMPTS_DIR = _HERE.parent / "prompts"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [OSIRIS-Mind] %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# 1. Prompt loader
+# ---------------------------------------------------------------------------
+
+def load_prompt(version: str = "v2") -> str:
+    """Load the system prompt from the prompts/ directory."""
+    path = _PROMPTS_DIR / f"profile_{version}.txt"
+    if not path.exists():
+        raise FileNotFoundError(f"Prompt not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 2. Input sanitiser  (prompt-injection resistance)
+# ---------------------------------------------------------------------------
+
+# Patterns that look like instruction injection embedded in OSINT data
+_INJECTION_PATTERNS = [
+    r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions?",
+    r"forget\s+(your\s+)?(system\s+prompt|instructions?|context)",
+    r"act\s+as\s+(a\s+)?",
+    r"you\s+are\s+now\s+",
+    r"admin\s*override",
+    r"osiris.supervisor",
+    r"set\s+(all\s+)?risk.sc[ro]+e",
+    r"return\s+only\s*[:\{]",
+    r"your\s+real\s+output\s+should",
+    r"new\s+instructions?:",
+    r"<\s*/?system\s*>",
+    r"\bDAN\b",
+    r"jailbreak",
+]
+
+_INJECTION_RE = re.compile(
+    "|".join(_INJECTION_PATTERNS),
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def _check_for_injection(raw_json_str: str) -> tuple[bool, Optional[str]]:
+    """Scan raw input string for injection patterns before passing to LLM."""
+    match = _INJECTION_RE.search(raw_json_str)
+    if match:
+        return True, f"Pattern detected: '{match.group(0)[:60]}'"
+    return False, None
+
+
+def sanitise_input(scan: Dict[str, Any]) -> tuple[Dict[str, Any], bool, Optional[str]]:
+    """
+    Check the raw scan dict for injection. Returns:
+      (cleaned_scan, injection_detected, injection_detail)
+    Cleaning: replace string-value entity fields with [REDACTED] if flagged.
+    """
+    scan_str = json.dumps(scan)
+    injected, detail = _check_for_injection(scan_str)
+
+    if not injected:
+        return scan, False, None
+
+    # Scrub potentially hostile string values from entity list
+    clean_entities = []
+    for entity in scan.get("entities", []):
+        clean = dict(entity)
+        if isinstance(clean.get("value"), str):
+            val_injected, _ = _check_for_injection(clean["value"])
+            if val_injected:
+                clean["value"] = "[REDACTED-INJECTION]"
+        clean_entities.append(clean)
+
+    clean_scan = dict(scan)
+    clean_scan["entities"] = clean_entities
+    return clean_scan, True, detail
+
+
+# ---------------------------------------------------------------------------
+# 3. LLM backends
+# ---------------------------------------------------------------------------
+
+class LLMBackend:
+    """Abstract base — subclass and implement call()."""
+
+    name: str = "base"
+
+    def call(self, system_prompt: str, user_message: str) -> str:
+        raise NotImplementedError
+
+    def metadata(self) -> Dict[str, Any]:
+        return {"backend": self.name}
+
+
+class DeepSeekBackend(LLMBackend):
+    """
+    Uses the DeepSeek API — OpenAI-compatible endpoint.
+    Default model: deepseek-chat (DeepSeek-V3, best price/performance).
+    Also supports: deepseek-reasoner (DeepSeek-R1, slower but stronger reasoning).
+
+    Docs: https://platform.deepseek.com/api-docs
+    pip install openai   (reuses the OpenAI SDK pointed at DeepSeek's base URL)
+    """
+
+    name = "deepseek_api"
+    BASE_URL = "https://api.deepseek.com"
+    DEFAULT_MODEL = "deepseek-chat"
+
+    def __init__(self, model: Optional[str] = None):
+        if not _OPENAI_AVAILABLE:
+            raise ImportError("pip install openai   # DeepSeek uses the OpenAI-compatible SDK")
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise EnvironmentError(
+                "DEEPSEEK_API_KEY not set. "
+                "Get a key at https://platform.deepseek.com/api-keys"
+            )
+        self.client = _openai_sdk.OpenAI(
+            api_key=api_key,
+            base_url=self.BASE_URL,
+        )
+        self.model = model or self.DEFAULT_MODEL
+
+    def call(self, system_prompt: str, user_message: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.2,
+            # DeepSeek supports JSON mode the same way OpenAI does
+            response_format={"type": "json_object"},
+            max_tokens=2048,
+        )
+        return response.choices[0].message.content
+
+    def metadata(self) -> Dict[str, Any]:
+        return {"backend": self.name, "model": self.model, "base_url": self.BASE_URL}
+
+
+class AnthropicBackend(LLMBackend):
+    """Uses the Anthropic Messages API (claude-sonnet-4-6 by default)."""
+
+    name = "anthropic_api"
+    DEFAULT_MODEL = "claude-sonnet-4-6"
+
+    def __init__(self, model: Optional[str] = None):
+        if not _ANTHROPIC_AVAILABLE:
+            raise ImportError("pip install anthropic")
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise EnvironmentError("ANTHROPIC_API_KEY not set")
+        self.client = _anthropic_sdk.Anthropic(api_key=api_key)
+        self.model = model or self.DEFAULT_MODEL
+
+    def call(self, system_prompt: str, user_message: str) -> str:
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=2048,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        return response.content[0].text
+
+    def metadata(self) -> Dict[str, Any]:
+        return {"backend": self.name, "model": self.model}
+
+
+class OpenAIBackend(LLMBackend):
+    """Uses the OpenAI Chat Completions API."""
+
+    name = "openai_api"
+    DEFAULT_MODEL = "gpt-4o-mini"
+
+    def __init__(self, model: Optional[str] = None):
+        if not _OPENAI_AVAILABLE:
+            raise ImportError("pip install openai")
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise EnvironmentError("OPENAI_API_KEY not set")
+        self.client = _openai_sdk.OpenAI(api_key=api_key)
+        self.model = model or self.DEFAULT_MODEL
+
+    def call(self, system_prompt: str, user_message: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        return response.choices[0].message.content
+
+    def metadata(self) -> Dict[str, Any]:
+        return {"backend": self.name, "model": self.model}
+
+
+class OllamaBackend(LLMBackend):
+    """Calls a local Ollama instance — fully offline, free."""
+
+    name = "ollama_local"
+    DEFAULT_MODEL = "llama3.2"
+
+    def __init__(self, model: Optional[str] = None):
+        if not _REQUESTS_AVAILABLE:
+            raise ImportError("pip install requests")
+        self.host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        self.model = model or os.getenv("OLLAMA_MODEL", self.DEFAULT_MODEL)
+
+    def call(self, system_prompt: str, user_message: str) -> str:
+        payload = {
+            "model": self.model,
+            "stream": False,
+            "options": {"temperature": 0.2},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        }
+        resp = _requests.post(
+            f"{self.host}/api/chat",
+            json=payload,
+            timeout=180,
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+
+    def metadata(self) -> Dict[str, Any]:
+        return {"backend": self.name, "model": self.model, "host": self.host}
+
+
+def get_backend(name: str, model: Optional[str] = None) -> LLMBackend:
+    backends = {
+        "deepseek":  DeepSeekBackend,
+        "openai":    OpenAIBackend,
+        "anthropic": AnthropicBackend,
+        "ollama":    OllamaBackend,
+    }
+    cls = backends.get(name)
+    if cls is None:
+        raise ValueError(f"Unknown backend '{name}'. Choose: {list(backends)}")
+    return cls(model=model)
+
+
+# ---------------------------------------------------------------------------
+# 4. Response parser & validator
+# ---------------------------------------------------------------------------
+
+def _strip_markdown_fencing(text: str) -> str:
+    """Remove ```json ... ``` wrappers if the model added them despite instructions."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        # drop first line (```json or ```) and last line (```)
+        inner = lines[1:] if lines[-1].strip() == "```" else lines[1:]
+        text = "\n".join(inner).rstrip("`").strip()
+    return text
+
+
+_REQUIRED_KEYS = {
+    "target", "injection_detected", "profile",
+    "risk_score", "risk_features", "executive_summary",
+}
+
+_REQUIRED_PROFILE_KEYS = {
+    "identity", "geo_temporal", "ocean_psychology",
+    "technical_stack", "opsec_posture",
+}
+
+_REQUIRED_OCEAN_KEYS = {
+    "openness", "conscientiousness", "extraversion",
+    "agreeableness", "neuroticism", "rationale",
+}
+
+
+def parse_and_validate(raw_text: str, target: str) -> Dict[str, Any]:
+    """
+    Parse LLM output into a dict and validate required schema keys.
+    Raises ValueError with a descriptive message on failure.
+    """
+    cleaned = _strip_markdown_fencing(raw_text)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        # Try to salvage: find first '{' and last '}'
+        start = cleaned.find("{")
+        end = cleaned.rfind("}") + 1
+        if start != -1 and end > start:
+            try:
+                data = json.loads(cleaned[start:end])
+            except json.JSONDecodeError:
+                raise ValueError(f"LLM returned non-JSON output: {exc}\n\nRaw:\n{raw_text[:500]}")
+        else:
+            raise ValueError(f"LLM returned non-JSON output: {exc}\n\nRaw:\n{raw_text[:500]}")
+
+    missing_root = _REQUIRED_KEYS - set(data.keys())
+    if missing_root:
+        raise ValueError(f"Dossier missing required keys: {missing_root}")
+
+    profile = data.get("profile", {})
+    missing_profile = _REQUIRED_PROFILE_KEYS - set(profile.keys())
+    if missing_profile:
+        raise ValueError(f"profile missing required keys: {missing_profile}")
+
+    ocean = profile.get("ocean_psychology", {})
+    missing_ocean = _REQUIRED_OCEAN_KEYS - set(ocean.keys())
+    if missing_ocean:
+        raise ValueError(f"ocean_psychology missing required keys: {missing_ocean}")
+
+    score = data.get("risk_score")
+    if not isinstance(score, (int, float)) or not (0 <= score <= 100):
+        raise ValueError(f"risk_score must be 0-100, got: {score!r}")
+
+    if not isinstance(data.get("risk_features"), list) or not data["risk_features"]:
+        raise ValueError("risk_features must be a non-empty list")
+
+    # Normalise: ensure target matches what we passed in
+    data["target"] = target
+
+    return data
+
+
+# ---------------------------------------------------------------------------
+# 5. Post-processing: add metadata, derive risk_level
+# ---------------------------------------------------------------------------
+
+def _risk_level(score: int) -> str:
+    if score < 25:  return "LOW"
+    if score < 50:  return "MEDIUM"
+    if score < 75:  return "HIGH"
+    return "CRITICAL"
+
+
+def enrich_dossier(
+    data: Dict[str, Any],
+    scan: Dict[str, Any],
+    backend: LLMBackend,
+    prompt_version: str,
+    run_start: float,
+    injection_detected: bool,
+    injection_detail: Optional[str],
+) -> Dict[str, Any]:
+    """Add metadata fields that the LLM doesn't produce."""
+    data.setdefault("schema_version", "1.0")
+    data["risk_level"] = _risk_level(int(data["risk_score"]))
+    data["scan_date"] = scan.get("scan_date", "unknown")
+    data["profiled_at"] = datetime.now(timezone.utc).isoformat()
+    data["processing_time_seconds"] = round(time.time() - run_start, 2)
+
+    # Merge injection detection: LLM may have set this too; OR with our pre-check
+    data["injection_detected"] = data.get("injection_detected", False) or injection_detected
+    if injection_detail and not data.get("injection_details"):
+        data["injection_details"] = injection_detail
+
+    # If injection was detected server-side, add it as a risk feature if LLM missed it
+    if injection_detected:
+        existing_features = {f["feature"] for f in data.get("risk_features", [])}
+        if "injection_attempt_detected" not in existing_features:
+            data["risk_features"].append({
+                "feature": "injection_attempt_detected",
+                "value": 1,
+                "weight": 0.35,
+                "plain_language": "Prompt-injection pattern detected in scan data — adversary may be attempting to manipulate analysis.",
+            })
+
+    data["model_metadata"] = {
+        **backend.metadata(),
+        "prompt_version": prompt_version,
+        "run_timestamp": data["profiled_at"],
+    }
+
+    # Ensure insufficient_data_flags exists
+    data.setdefault("insufficient_data_flags", [])
+
+    return data
+
+
+# ---------------------------------------------------------------------------
+# 6. Main profile function
+# ---------------------------------------------------------------------------
+
+def profile(
+    raw_scan_path: str | Path,
+    output_path: str | Path,
+    backend_name: str = "deepseek",
+    model: Optional[str] = None,
+    prompt_version: str = "v2",
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Full OSIRIS-Mind pipeline for one target.
+    Returns the dossier dict (also written to output_path).
+    """
+    run_start = time.time()
+
+    # ── Load raw scan
+    raw_scan_path = Path(raw_scan_path)
+    log.info("Loading raw scan: %s", raw_scan_path)
+    scan = json.loads(raw_scan_path.read_text(encoding="utf-8"))
+    target = scan.get("target", "unknown")
+
+    # ── Injection pre-check
+    clean_scan, injected, injection_detail = sanitise_input(scan)
+    if injected:
+        log.warning("⚠  Injection pattern detected in input for target '%s': %s", target, injection_detail)
+
+    # ── Load prompt
+    system_prompt = load_prompt(prompt_version)
+    log.info("Using prompt version: %s", prompt_version)
+
+    # ── Build user message
+    user_message = (
+        "Analyse this OSINT scan data and return a dossier JSON "
+        "matching your system prompt schema:\n\n"
+        + json.dumps(clean_scan, indent=2, default=str)
+    )
+
+    if dry_run:
+        log.info("DRY RUN — skipping LLM call. Returning stub dossier.")
+        backend = type("StubBackend", (LLMBackend,), {
+            "name": "dry_run",
+            "metadata": lambda self: {"backend": "dry_run"},
+        })()
+        dossier = _stub_dossier(target, scan)
+        dossier = enrich_dossier(
+            dossier, scan, backend, prompt_version,
+            run_start, injected, injection_detail,
+        )
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(dossier, indent=2, default=str), encoding="utf-8")
+        log.info("✓ Stub dossier written → %s", output_path)
+        return dossier
+    else:
+        # ── LLM call
+        backend = get_backend(backend_name, model)
+        log.info("Calling LLM backend: %s", backend_name)
+        raw_response = backend.call(system_prompt, user_message)
+        log.info("LLM responded (%d chars)", len(raw_response))
+
+        # ── Parse & validate
+        try:
+            dossier = parse_and_validate(raw_response, target)
+        except ValueError as exc:
+            log.error("Validation failed: %s", exc)
+            log.error("Raw LLM output:\n%s", raw_response[:1000])
+            raise
+
+        # ── Enrich
+        dossier = enrich_dossier(
+            dossier, scan, backend, prompt_version,
+            run_start, injected, injection_detail,
+        )
+
+        # ── Write output
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(dossier, indent=2, default=str), encoding="utf-8")
+        log.info(
+            "✓ Dossier written → %s  [risk_score=%d, level=%s, time=%.1fs]",
+            output_path,
+            dossier.get("risk_score", -1),
+            dossier.get("risk_level", "?"),
+            time.time() - run_start,
+        )
+        return dossier
+
+
+# ---------------------------------------------------------------------------
+# 7. Stub dossier (dry-run / fallback)
+# ---------------------------------------------------------------------------
+
+def _stub_dossier(target: str, scan: Dict[str, Any]) -> Dict[str, Any]:
+    """Produce a structurally valid dossier without calling an LLM — for testing."""
+    entity_count = len(scan.get("entities", []))
+    return {
+        "target": target,
+        "schema_version": "1.0",
+        "injection_detected": False,
+        "injection_details": None,
+        "profile": {
+            "identity": f"Stub profile for {target}. {entity_count} entities found.",
+            "geo_temporal": "Temporal analysis unavailable in stub mode.",
+            "ocean_psychology": {
+                "openness": 0.5,
+                "conscientiousness": 0.5,
+                "extraversion": 0.5,
+                "agreeableness": 0.5,
+                "neuroticism": 0.5,
+                "rationale": "All dimensions set to neutral (0.5) in stub mode.",
+            },
+            "technical_stack": ["unknown"],
+            "ideology": None,
+            "opsec_posture": "Unable to assess OpSec posture in stub mode.",
+        },
+        "risk_score": min(entity_count * 2, 30),
+        "risk_level": "LOW",
+        "risk_features": [
+            {
+                "feature": "entity_count",
+                "value": entity_count,
+                "weight": 0.02,
+                "plain_language": f"Target has {entity_count} discovered entities.",
+            }
+        ],
+        "insufficient_data_flags": [
+            {
+                "dimension": "all",
+                "reason": "Stub mode — no LLM call made",
+                "fallback_value": "0.5 / neutral",
+            }
+        ],
+        "executive_summary": (
+            f"This is a stub dossier for {target} generated without an LLM call. "
+            "Run without --dry-run to produce a real assessment."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8. Explabox integration helpers  (Week 3 — Person C interface)
+# ---------------------------------------------------------------------------
+
+def extract_feature_vector(dossier: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Convert risk_features into a flat {feature_name: value} dict.
+    This is what Person C feeds into Explabox's TextClassifier wrapper.
+    """
+    return {
+        f["feature"]: float(f["value"]) if isinstance(f["value"], (int, float)) else 0.0
+        for f in dossier.get("risk_features", [])
+    }
+
+
+def score_from_features(feature_vector: Dict[str, float], dossier: Dict[str, Any]) -> float:
+    """
+    Re-derive risk_score from feature_vector using weights in dossier.
+    Returns a float in [0, 100]. Used by Explabox to verify attribution.
+    """
+    weight_map = {
+        f["feature"]: f["weight"]
+        for f in dossier.get("risk_features", [])
+    }
+    raw = sum(feature_vector.get(feat, 0.0) * w for feat, w in weight_map.items())
+    return max(0.0, min(100.0, raw * 100))
+
+
+def build_explabox_dataset(dossier_paths: List[str | Path]) -> List[Dict[str, Any]]:
+    """
+    Load multiple dossiers and build a list of feature-vector + label records
+    for Explabox's dataset. Call this from Person C's explain_wrap.py.
+
+    Returns:
+        [
+          {
+            "target": "...",
+            "features": {"breach_appearance_count": 3.0, ...},
+            "risk_score": 72,
+            "risk_level": "HIGH",
+          },
+          ...
+        ]
+    """
+    records = []
+    for path in dossier_paths:
+        dossier = json.loads(Path(path).read_text(encoding="utf-8"))
+        records.append({
+            "target": dossier["target"],
+            "features": extract_feature_vector(dossier),
+            "risk_score": dossier["risk_score"],
+            "risk_level": dossier.get("risk_level", "UNKNOWN"),
+            "executive_summary": dossier.get("executive_summary", ""),
+        })
+    return records
+
+
+# ---------------------------------------------------------------------------
+# 9. Executive summary helper  (Week 3 — Person A integration)
+# ---------------------------------------------------------------------------
+
+def get_report_summary_block(dossier: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Return a compact dict that Person A's report_build.py can inject
+    directly into their Jinja2 template context.
+    """
+    return {
+        "target": dossier["target"],
+        "risk_score": dossier["risk_score"],
+        "risk_level": dossier.get("risk_level", "UNKNOWN"),
+        "executive_summary": dossier.get("executive_summary", ""),
+        "top_features": dossier.get("risk_features", [])[:3],
+        "technical_stack": dossier.get("profile", {}).get("technical_stack", []),
+        "opsec_posture": dossier.get("profile", {}).get("opsec_posture", ""),
+        "identity": dossier.get("profile", {}).get("identity", ""),
+        "injection_detected": dossier.get("injection_detected", False),
+        "profiled_at": dossier.get("profiled_at", ""),
+        "model_metadata": dossier.get("model_metadata", {}),
+        "insufficient_data_flags": dossier.get("insufficient_data_flags", []),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 10. CLI
+# ---------------------------------------------------------------------------
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="OSIRIS-Mind: AI profiling and risk scoring stage.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    p.add_argument("--input",    "-i", help="Path to raw_scan.json (Contract 1 input)")
+    p.add_argument("--output",   "-o", help="Path to write dossier.json (Contract 2 output)")
+    p.add_argument("--backend",  "-b", default="deepseek",
+                   choices=["deepseek", "openai", "anthropic", "ollama"],
+                   help="LLM backend to use (default: deepseek)")
+    p.add_argument("--model",    "-m", default=None,
+                   help="Model name override (e.g. deepseek-chat, deepseek-reasoner, gpt-4o, llama3.2)")
+    p.add_argument("--prompt",   "-p", default="v2",
+                   choices=["v1", "v2"],
+                   help="Prompt version to use (default: v2)")
+    p.add_argument("--dry-run",  action="store_true",
+                   help="Skip LLM call; produce a stub dossier for testing")
+    p.add_argument("--regression", action="store_true",
+                   help="Run regression test suite against sample inputs")
+    return p
+
+
+def _run_regression():
+    """
+    Run all sample JSON files through the pipeline in dry-run mode
+    and report score variance (real regression requires backend creds).
+    """
+    samples_dir = _HERE.parent / "schemas" / "samples"
+    sample_files = list(samples_dir.glob("*.json"))
+    if not sample_files:
+        log.warning("No sample files found in %s", samples_dir)
+        return
+
+    log.info("Running regression on %d sample files…", len(sample_files))
+    results = []
+    for f in sample_files:
+        try:
+            scan = json.loads(f.read_text())
+            stub = _stub_dossier(scan.get("target", f.stem), scan)
+            results.append({
+                "file": f.name,
+                "target": stub["target"],
+                "risk_score": stub["risk_score"],
+                "entities": len(scan.get("entities", [])),
+            })
+        except Exception as exc:
+            log.error("FAIL %s: %s", f.name, exc)
+            results.append({"file": f.name, "error": str(exc)})
+
+    log.info("Regression results:")
+    for r in results:
+        if "error" in r:
+            log.error("  %-35s  ERROR: %s", r["file"], r["error"])
+        else:
+            log.info(
+                "  %-35s  target=%-30s  score=%3d  entities=%d",
+                r["file"], r["target"], r["risk_score"], r["entities"],
+            )
+
+
+def main():
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if args.regression:
+        _run_regression()
+        sys.exit(0)
+
+    if not args.input:
+        parser.error("--input is required (unless using --regression)")
+    if not args.output:
+        parser.error("--output is required (unless using --regression)")
+
+    try:
+        profile(
+            raw_scan_path=args.input,
+            output_path=args.output,
+            backend_name=args.backend,
+            model=args.model,
+            prompt_version=args.prompt,
+            dry_run=args.dry_run,
+        )
+    except Exception as exc:
+        log.error("Fatal error: %s", exc)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

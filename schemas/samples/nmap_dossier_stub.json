@@ -1,0 +1,49 @@
+{
+  "target": "scanme.nmap.org",
+  "schema_version": "1.0",
+  "injection_detected": false,
+  "injection_details": null,
+  "profile": {
+    "identity": "Stub profile for scanme.nmap.org. 41 entities found.",
+    "geo_temporal": "Temporal analysis unavailable in stub mode.",
+    "ocean_psychology": {
+      "openness": 0.5,
+      "conscientiousness": 0.5,
+      "extraversion": 0.5,
+      "agreeableness": 0.5,
+      "neuroticism": 0.5,
+      "rationale": "All dimensions set to neutral (0.5) in stub mode."
+    },
+    "technical_stack": [
+      "unknown"
+    ],
+    "ideology": null,
+    "opsec_posture": "Unable to assess OpSec posture in stub mode."
+  },
+  "risk_score": 30,
+  "risk_level": "MEDIUM",
+  "risk_features": [
+    {
+      "feature": "entity_count",
+      "value": 41,
+      "weight": 0.02,
+      "plain_language": "Target has 41 discovered entities."
+    }
+  ],
+  "insufficient_data_flags": [
+    {
+      "dimension": "all",
+      "reason": "Stub mode \u2014 no LLM call made",
+      "fallback_value": "0.5 / neutral"
+    }
+  ],
+  "executive_summary": "This is a stub dossier for scanme.nmap.org generated without an LLM call. Run without --dry-run to produce a real assessment.",
+  "scan_date": "2026-06-24T07:56:27Z",
+  "profiled_at": "2026-06-25T06:57:03.473164+00:00",
+  "processing_time_seconds": 0.0,
+  "model_metadata": {
+    "backend": "dry_run",
+    "prompt_version": "v2",
+    "run_timestamp": "2026-06-25T06:57:03.473164+00:00"
+  }
+}
