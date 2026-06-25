@@ -26,6 +26,10 @@ fi
 pip install -r spiderfoot/requirements.txt
 
 echo "Installing OSIRIS-Mind dependencies (Person B)..."
+# openai SDK covers both DeepSeek and OpenAI backends; pydantic for schema validation
+pip install openai pydantic pytest
+# Fix click/httpx version conflict (httpx can pull in an incompatible click version)
+pip install --upgrade click httpx
 curl -fsSL https://ollama.com/install.sh | sh
 
 echo "Installing OSIRIS-Web & Conscience dependencies (Person C)..."
