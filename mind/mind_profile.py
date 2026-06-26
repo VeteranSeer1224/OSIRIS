@@ -31,11 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # ── optional heavy deps — fail gracefully so unit tests can import without them
-try:
-    import openai as _openai_sdk
-    _OPENAI_AVAILABLE = True
-except ImportError:
-    _OPENAI_AVAILABLE = False
+
 
 try:
     import anthropic as _anthropic_sdk
@@ -166,8 +162,16 @@ class DeepSeekBackend(LLMBackend):
     DEFAULT_MODEL = "deepseek-chat"
 
     def __init__(self, model: Optional[str] = None):
-        if not _OPENAI_AVAILABLE:
-            raise ImportError("pip install openai   # DeepSeek uses the OpenAI-compatible SDK")
+
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "DeepSeek backend requires the OpenAI SDK.\n"
+                "Install with:\n"
+                "pip install openai"
+            ) from exc
+
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
             raise EnvironmentError(
@@ -233,8 +237,16 @@ class OpenAIBackend(LLMBackend):
     DEFAULT_MODEL = "gpt-4o-mini"
 
     def __init__(self, model: Optional[str] = None):
-        if not _OPENAI_AVAILABLE:
-            raise ImportError("pip install openai")
+        
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "DeepSeek backend requires the OpenAI SDK.\n"
+                "Install with:\n"
+                "pip install openai"
+            ) from exc
+
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise EnvironmentError("OPENAI_API_KEY not set")
@@ -580,13 +592,84 @@ def _stub_dossier(target: str, scan: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 8. Explabox integration helpers  (Week 3 — Person C interface)
+# 8. Feature normalisation  (Person C suggestion — implemented Week 2)
+#
+# Problem: raw feature values span incompatible scales.
+#   domain_age_days     → 0 .. ~30,000   (days since registration)
+#   breach_appearance_count → 0 .. ~5
+#   exposed_email_count → 0 .. ~5
+#   subdomain_count     → 0 .. ~50+
+#   binary flags        → 0 or 1
+#
+# Without normalisation, domain_age_days dominates the weighted sum by
+# orders of magnitude, making the score uninterpretable and the XAI
+# attribution meaningless (Person C's exact concern).
+#
+# Method: per-feature Min-Max normalisation using KNOWN DOMAIN BOUNDS.
+# We prefer domain-knowledge bounds over data-driven z-score here because:
+#   (a) we may have only one target per run — no population to fit
+#   (b) the bounds are stable and explainable to investigators
+#   (c) it keeps score_from_features fully deterministic and reproducible
+#
+# Formula: norm = clamp((value - min) / (max - min), 0, 1)
+# The LLM still produces raw values in risk_features (for audit trail).
+# Normalisation happens only inside score_from_features / extract_feature_vector.
+# ---------------------------------------------------------------------------
+
+# Each entry: feature_name → (min, max)
+# Values outside [min, max] are clamped, not rejected.
+FEATURE_BOUNDS: Dict[str, tuple[float, float]] = {
+    # ── Positive-risk features (higher raw value = more risk)
+    "breach_appearance_count":      (0.0,   5.0),
+    "exposed_email_count":          (0.0,   5.0),
+    "open_ports_sensitive":         (0.0,   5.0),
+    "subdomain_count":              (0.0,  50.0),
+    "unknown_registrar":            (0.0,   1.0),   # binary
+    "recent_infrastructure_churn":  (0.0,   1.0),   # binary
+    "aws_infrastructure":           (0.0,   1.0),   # binary
+    "injection_attempt_detected":   (0.0,   1.0),   # binary
+    "deliberate_test_target":       (0.0,   1.0),   # binary (negative weight)
+    "entity_count":                 (0.0, 200.0),
+    # ── Negative-risk features (higher raw value = lower risk)
+    "domain_age_days":              (0.0, 30000.0), # ~82 years max
+    "privacy_registrar_used":       (0.0,   1.0),   # binary
+    "cloudflare_proxied":           (0.0,   1.0),   # binary
+    "ipv6_enabled":                 (0.0,   1.0),   # binary
+}
+
+# Features not in the table pass through as-is (assumed already 0-1 or binary).
+_BOUNDS_FALLBACK: tuple[float, float] = (0.0, 1.0)
+
+
+def normalise_value(feature: str, raw_value: float) -> float:
+    """
+    Min-Max normalise a single feature value to [0, 1] using FEATURE_BOUNDS.
+    Unknown features are clamped to [0, 1] using the fallback bounds.
+    """
+    lo, hi = FEATURE_BOUNDS.get(feature, _BOUNDS_FALLBACK)
+    if hi == lo:
+        return 0.0
+    return max(0.0, min(1.0, (raw_value - lo) / (hi - lo)))
+
+
+def normalise_feature_vector(raw_vector: Dict[str, float]) -> Dict[str, float]:
+    """
+    Return a new dict with every value normalised to [0, 1].
+    This is the vector Person C passes to Explabox — each dimension is
+    now on the same scale, so SHAP/LIME attributions are directly comparable.
+    """
+    return {feat: normalise_value(feat, val) for feat, val in raw_vector.items()}
+
+
+# ---------------------------------------------------------------------------
+# 9. Explabox integration helpers  (Week 3 — Person C interface)
 # ---------------------------------------------------------------------------
 
 def extract_feature_vector(dossier: Dict[str, Any]) -> Dict[str, float]:
     """
-    Convert risk_features into a flat {feature_name: value} dict.
-    This is what Person C feeds into Explabox's TextClassifier wrapper.
+    Convert risk_features into a flat {feature_name: raw_value} dict.
+    Raw values are preserved here for audit trail.
+    Use normalise_feature_vector() on the result before passing to Explabox.
     """
     return {
         f["feature"]: float(f["value"]) if isinstance(f["value"], (int, float)) else 0.0
@@ -596,14 +679,21 @@ def extract_feature_vector(dossier: Dict[str, Any]) -> Dict[str, float]:
 
 def score_from_features(feature_vector: Dict[str, float], dossier: Dict[str, Any]) -> float:
     """
-    Re-derive risk_score from feature_vector using weights in dossier.
+    Re-derive risk_score from a RAW feature_vector using weights in dossier.
+    Each feature is normalised to [0, 1] before weighting so that features
+    on different scales (e.g. domain_age_days vs binary flags) contribute
+    proportionally to their intended weight, not their raw magnitude.
+
+    Formula: score = clamp(sum(normalise(v) * w for v, w in features) * 100, 0, 100)
+
     Returns a float in [0, 100]. Used by Explabox to verify attribution.
     """
     weight_map = {
         f["feature"]: f["weight"]
         for f in dossier.get("risk_features", [])
     }
-    raw = sum(feature_vector.get(feat, 0.0) * w for feat, w in weight_map.items())
+    normalised = normalise_feature_vector(feature_vector)
+    raw = sum(normalised.get(feat, 0.0) * w for feat, w in weight_map.items())
     return max(0.0, min(100.0, raw * 100))
 
 
@@ -612,11 +702,15 @@ def build_explabox_dataset(dossier_paths: List[str | Path]) -> List[Dict[str, An
     Load multiple dossiers and build a list of feature-vector + label records
     for Explabox's dataset. Call this from Person C's explain_wrap.py.
 
+    Each record contains both raw_features (for audit) and features (normalised,
+    for Explabox — all values in [0, 1] on a comparable scale).
+
     Returns:
         [
           {
             "target": "...",
-            "features": {"breach_appearance_count": 3.0, ...},
+            "raw_features":  {"domain_age_days": 10023.0, ...},  # original values
+            "features":      {"domain_age_days": 0.334, ...},    # normalised [0,1]
             "risk_score": 72,
             "risk_level": "HIGH",
           },
@@ -626,11 +720,13 @@ def build_explabox_dataset(dossier_paths: List[str | Path]) -> List[Dict[str, An
     records = []
     for path in dossier_paths:
         dossier = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = extract_feature_vector(dossier)
         records.append({
-            "target": dossier["target"],
-            "features": extract_feature_vector(dossier),
-            "risk_score": dossier["risk_score"],
-            "risk_level": dossier.get("risk_level", "UNKNOWN"),
+            "target":          dossier["target"],
+            "raw_features":    raw,
+            "features":        normalise_feature_vector(raw),
+            "risk_score":      dossier["risk_score"],
+            "risk_level":      dossier.get("risk_level", "UNKNOWN"),
             "executive_summary": dossier.get("executive_summary", ""),
         })
     return records
