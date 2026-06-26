@@ -110,7 +110,7 @@ def valid_dossier() -> Dict[str, Any]:
             {
                 "feature": "domain_age_days",
                 "value": 11278,
-                "weight": -0.008,
+                "weight": -0.25,
                 "plain_language": "Domain registered in 1995 — very well-established.",
             },
             {
@@ -482,6 +482,97 @@ class TestDeepSeekBackend:
 
 
 # ---------------------------------------------------------------------------
+# 10. Normalisation tests  (Person C suggestion)
+# ---------------------------------------------------------------------------
+
+class TestNormalisation:
+
+    def test_domain_age_midpoint(self):
+        """15,000 days out of 30,000 max should normalise to 0.5."""
+        from mind.mind_profile import normalise_value
+        result = normalise_value("domain_age_days", 15000.0)
+        assert abs(result - 0.5) < 1e-9
+
+    def test_domain_age_zero(self):
+        from mind.mind_profile import normalise_value
+        assert normalise_value("domain_age_days", 0.0) == 0.0
+
+    def test_domain_age_max(self):
+        from mind.mind_profile import normalise_value
+        assert normalise_value("domain_age_days", 30000.0) == 1.0
+
+    def test_domain_age_over_max_clamped(self):
+        """Values above the bound clamp to 1.0, not above."""
+        from mind.mind_profile import normalise_value
+        assert normalise_value("domain_age_days", 99999.0) == 1.0
+
+    def test_binary_feature_passes_through(self):
+        from mind.mind_profile import normalise_value
+        assert normalise_value("cloudflare_proxied", 1.0) == 1.0
+        assert normalise_value("cloudflare_proxied", 0.0) == 0.0
+
+    def test_unknown_feature_clamped_to_01(self):
+        """Features not in FEATURE_BOUNDS use fallback [0, 1] and clamp."""
+        from mind.mind_profile import normalise_value
+        assert normalise_value("totally_new_feature", 0.7) == 0.7
+        assert normalise_value("totally_new_feature", 5.0) == 1.0
+
+    def test_normalise_vector_all_values_in_range(self, valid_dossier):
+        from mind.mind_profile import extract_feature_vector, normalise_feature_vector
+        raw = extract_feature_vector(valid_dossier)
+        normed = normalise_feature_vector(raw)
+        for feat, val in normed.items():
+            assert 0.0 <= val <= 1.0, f"{feat} = {val} is outside [0, 1]"
+
+    def test_score_not_dominated_by_domain_age(self):
+        """
+        Core regression: before normalisation, domain_age_days=10000 * weight=-0.008
+        = -80 raw contribution, completely swamping other features.
+        After normalisation, it contributes normalise(10000/30000) * -0.25 = -0.083,
+        comparable to other features.
+        """
+        from mind.mind_profile import score_from_features
+
+        dossier_with_age = {
+            "risk_features": [
+                {"feature": "domain_age_days",      "value": 10000, "weight": -0.25,
+                 "plain_language": "Old domain."},
+                {"feature": "breach_appearance_count", "value": 3,   "weight": +0.41,
+                 "plain_language": "3 breaches found."},
+            ]
+        }
+        score = score_from_features(
+            {"domain_age_days": 10000.0, "breach_appearance_count": 3.0},
+            dossier_with_age
+        )
+        # With normalisation: (3/5)*0.41 + (10000/30000)*(-0.25) = 0.246 - 0.083 = 0.163 → score ~16
+        # Without normalisation it would be: 3*0.41 + 10000*(-0.25) = -2497 → clamped to 0
+        # The score should be a meaningful positive number, not 0
+        assert score > 0, "domain_age_days is dominating and zeroing out the score"
+        assert score < 50, "Score should be moderate given mixed signals"
+
+    def test_score_is_deterministic(self, valid_dossier):
+        """Same inputs must always produce the same score — no randomness."""
+        from mind.mind_profile import extract_feature_vector, score_from_features
+        raw = extract_feature_vector(valid_dossier)
+        scores = [score_from_features(raw, valid_dossier) for _ in range(20)]
+        assert len(set(round(s, 6) for s in scores)) == 1, "Score is non-deterministic"
+
+    def test_explabox_dataset_has_normalised_features(self, valid_dossier, tmp_path):
+        from mind.mind_profile import build_explabox_dataset
+        p = tmp_path / "dossier.json"
+        p.write_text(json.dumps(valid_dossier), encoding="utf-8")
+        records = build_explabox_dataset([p])
+        # normalised features must all be in [0, 1]
+        for feat, val in records[0]["features"].items():
+            assert 0.0 <= val <= 1.0, f"Normalised {feat}={val} outside [0,1]"
+        # raw_features must also be present and unchanged
+        assert "raw_features" in records[0]
+        raw = records[0]["raw_features"]
+        assert raw["domain_age_days"] == 11278.0   # from valid_dossier fixture
+
+
+# ---------------------------------------------------------------------------
 # 8. Edge cases
 # ---------------------------------------------------------------------------
 
@@ -508,3 +599,20 @@ class TestEdgeCases:
         scan = {"target": "big.com", "entities": many_entities, "events": []}
         stub = _stub_dossier("big.com", scan)
         assert 0 <= stub["risk_score"] <= 100
+
+    def test_unknown_feature_does_not_crash(self):
+        dossier = {
+            "risk_features": [
+                {
+                    "feature": "future_feature",
+                    "value": 0.7,
+                    "weight": 0.2,
+                    "plain_language": "future"
+                }
+            ]
+        }
+        score = score_from_features(
+            {"future_feature": 0.7},
+            dossier
+        )
+        assert 0 <= score <= 100

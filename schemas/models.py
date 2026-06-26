@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +68,8 @@ class RawScan(BaseModel):
         description="Untouched SpiderFoot export kept for audit trail"
     )
 
-    @validator("entities")
+    @field_validator("entities")
+    @classmethod
     def at_least_one_entity(cls, v):
         if not v:
             raise ValueError("entities list must not be empty")
@@ -125,21 +126,21 @@ class Dossier(BaseModel):
     profiled_at: datetime
     profile: DimensionProfile
     risk_score: int = Field(..., ge=0, le=100)
-    risk_level: str                         # "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+    risk_level: str | None = None                      # "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
     risk_features: List[RiskFeature]
     insufficient_data_flags: List[InsufficientDataFlag] = Field(default_factory=list)
     executive_summary: str                  # 2-3 sentence plain-language summary for Person A
     model_metadata: ModelMetadata
     schema_version: str = "1.0"
 
-    @validator("risk_level", pre=True, always=True)
-    def derive_risk_level(cls, v, values):
-        score = values.get("risk_score", 0)
-        if score < 25:
-            return "LOW"
-        elif score < 50:
-            return "MEDIUM"
-        elif score < 75:
-            return "HIGH"
+    @model_validator(mode="after")
+    def derive_risk_level(self):
+        if self.risk_score < 25:
+            self.risk_level = "LOW"
+        elif self.risk_score < 50:
+            self.risk_level = "MEDIUM"
+        elif self.risk_score < 75:
+            self.risk_level = "HIGH"
         else:
-            return "CRITICAL"
+            self.risk_level = "CRITICAL"
+        return self

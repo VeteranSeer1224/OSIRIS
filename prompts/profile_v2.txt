@@ -84,18 +84,36 @@ Canonical reference points (DO NOT deviate):
   - testphp.vulnweb.com (deliberate vuln sandbox)  → score 45-60
   - A domain with confirmed malware C2             → score 85-100
 
-Feature weight reference table:
-  breach_appearance_count:     +0.41 per occurrence (cap at 3 occurrences)
-  exposed_email_count:         +0.12 per exposed email (cap at 5)
-  domain_age_days:             -0.008 per year of age (older = more established = lower risk)
-  privacy_registrar_used:      -0.10 (using a privacy service is neutral-good opsec)
-  cloudflare_proxied:          -0.08 (CDN proxy reduces direct exposure)
-  open_ports_sensitive:        +0.25 per sensitive open port (22, 3306, 5432, etc.)
-  injection_attempt_detected:  +0.35 (fixed penalty)
-  subdomain_count:             +0.03 per subdomain over 10
-  recent_infrastructure_churn: +0.18 (DNS/IP changes in last 90 days)
-  aws_infrastructure:          +0.05 (neutral — common but adds attack surface)
-  unknown_registrar:           +0.10 (obscure/privacy-only registrar)
+Feature reference table — emit RAW values in risk_features.value:
+(Normalisation to [0,1] is applied in code after your output; do NOT pre-normalise)
+
+  feature name                 raw value meaning            bounds used in code
+  breach_appearance_count      integer count                [0, 5]
+  exposed_email_count          integer count                [0, 5]
+  domain_age_days              integer days since reg.      [0, 30000]
+  open_ports_sensitive         integer count                [0, 5]
+  subdomain_count              integer count                [0, 50]
+  privacy_registrar_used       1 = yes, 0 = no              [0, 1]
+  cloudflare_proxied           1 = yes, 0 = no              [0, 1]
+  injection_attempt_detected   1 = yes, 0 = no              [0, 1]  weight +0.35
+  recent_infrastructure_churn  1 = yes, 0 = no              [0, 1]
+  aws_infrastructure           1 = yes, 0 = no              [0, 1]
+  unknown_registrar            1 = yes, 0 = no              [0, 1]
+  deliberate_test_target       1 = yes, 0 = no              [0, 1]
+
+Suggested weights (you may adjust based on evidence, but stay within ±0.1):
+  breach_appearance_count:     +0.41
+  exposed_email_count:         +0.12
+  domain_age_days:             -0.25  (older = established = lower risk)
+  privacy_registrar_used:      -0.10
+  cloudflare_proxied:          -0.08
+  open_ports_sensitive:        +0.25
+  injection_attempt_detected:  +0.35
+  subdomain_count:             +0.15
+  recent_infrastructure_churn: +0.18
+  aws_infrastructure:          +0.05
+  unknown_registrar:           +0.10
+  deliberate_test_target:      -0.40
 
 risk_level derivation:
   0-24   → "LOW"
