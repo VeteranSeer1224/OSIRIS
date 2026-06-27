@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSIRIS-Web — Graph Intelligence</title>
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font-family: Arial, sans-serif; background: #0b1020; color: #e5e7eb; }
+    .wrap { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px; min-height: 100vh; box-sizing: border-box; }
+    .panel { background: #111827; border: 1px solid #243043; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+    .panel h1, .panel h2 { margin: 0; padding: 14px 16px; border-bottom: 1px solid #243043; }
+    #network { height: calc(100vh - 32px); min-height: 760px; }
+    .side { display: flex; flex-direction: column; }
+    .side .content { padding: 16px; overflow: auto; }
+    .meta { font-size: 14px; line-height: 1.5; color: #cbd5e1; margin-bottom: 14px; }
+    .timeline-list { padding-left: 18px; margin: 0; display: grid; gap: 12px; }
+    .timeline-list li { line-height: 1.45; }
+    .timeline-list code { background: #1f2937; padding: 2px 6px; border-radius: 999px; }
+    .timeline-empty { color: #94a3b8; }
+    .legend { display: grid; gap: 8px; margin-top: 16px; font-size: 13px; color: #cbd5e1; }
+    .legend span { display: inline-flex; align-items: center; gap: 8px; }
+    .dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="panel">
+      <h1>OSIRIS-Web — Graph Intelligence</h1>
+      <div id="network"></div>
+    </section>
+    <aside class="panel side">
+      <h2>Timeline</h2>
+      <div class="content">
+        <div class="meta">Events were read from <code>raw_scan.json</code> and attached to the graph as event nodes.</div>
+        <ol class="timeline-list"><li><strong>2010-01-01</strong> — <span>domain_registered</span> — <code>example.com</code></li><li><strong>2022-05-14</strong> — <span>breach_appearance</span> — <code>admin@example.com</code> — <em>haveibeenpwned</em></li></ol>
+        <div class="legend">
+          <span><i class="dot" style="background:#2563eb"></i>domain</span>
+          <span><i class="dot" style="background:#1d4ed8"></i>subdomain</span>
+          <span><i class="dot" style="background:#0f766e"></i>ip</span>
+          <span><i class="dot" style="background:#c2410c"></i>email</span>
+          <span><i class="dot" style="background:#be185d"></i>social_profile</span>
+          <span><i class="dot" style="background:#6b7280"></i>event</span>
+        </div>
+      </div>
+    </aside>
+  </div>
+  <script>
+    const nodes = new vis.DataSet([{"id": "target", "label": "example.com", "title": "Target: example.com", "group": "target", "shape": "dot", "color": "#7c3aed"}, {"id": "domain:example.com", "label": "example.com", "title": "Type: domain\nValue: example.com", "group": "domain", "shape": "dot", "color": "#4F81BD"}, {"id": "subdomain:mail.example.com", "label": "mail.example.com", "title": "Type: subdomain\nValue: mail.example.com", "group": "subdomain", "shape": "dot", "color": "#6FA8DC"}, {"id": "ip:93.184.216.34", "label": "93.184.216.34", "title": "Type: ip\nValue: 93.184.216.34", "group": "ip", "shape": "triangle", "color": "#F6B26B"}, {"id": "email:admin@example.com", "label": "admin@example.com", "title": "Type: email\nValue: admin@example.com", "group": "email", "shape": "box", "color": "#93C47D"}, {"id": "social_profile:github.com/exampleuser", "label": "github.com/exampleuser", "title": "Type: social_profile\nValue: github.com/exampleuser\nPlatform: github", "group": "social_profile", "shape": "diamond", "color": "#E06666"}, {"id": "event:0:domain_registered:2010-01-01", "label": "domain_registered\n2010-01-01", "title": "Date: 2010-01-01\nType: domain_registered\nEntity: example.com", "group": "event", "shape": "diamond", "color": "#6b7280"}, {"id": "event:1:breach_appearance:2022-05-14", "label": "breach_appearance\n2022-05-14", "title": "Date: 2022-05-14\nType: breach_appearance\nEntity: admin@example.com\nSource: haveibeenpwned", "group": "event", "shape": "diamond", "color": "#6b7280"}]);
+    const edges = new vis.DataSet([{"from": "target", "to": "domain:example.com", "label": "observed", "title": "observed", "arrows": "to"}, {"from": "target", "to": "email:admin@example.com", "label": "observed", "title": "observed", "arrows": "to"}, {"from": "target", "to": "ip:93.184.216.34", "label": "observed", "title": "observed", "arrows": "to"}, {"from": "target", "to": "social_profile:github.com/exampleuser", "label": "observed", "title": "observed", "arrows": "to"}, {"from": "target", "to": "subdomain:mail.example.com", "label": "observed", "title": "observed", "arrows": "to"}, {"from": "subdomain:mail.example.com", "to": "domain:example.com", "label": "belongs_to", "title": "belongs_to", "arrows": "to"}, {"from": "ip:93.184.216.34", "to": "target", "label": "resolved_for", "title": "resolved_for", "arrows": "to"}, {"from": "email:admin@example.com", "to": "domain:example.com", "label": "uses_domain", "title": "uses_domain", "arrows": "to"}, {"from": "event:0:domain_registered:2010-01-01", "to": "domain:example.com", "label": "domain_registered", "title": "domain_registered", "arrows": "to"}, {"from": "event:1:breach_appearance:2022-05-14", "to": "email:admin@example.com", "label": "breach_appearance", "title": "breach_appearance", "arrows": "to"}]);
+    const container = document.getElementById('network');
+    const data = { nodes, edges };
+    const options = {
+      physics: { stabilization: true, barnesHut: { gravitationalConstant: -25000, springLength: 120 } },
+      interaction: { hover: true, navigationButtons: true, keyboard: true },
+      nodes: { font: { color: '#e5e7eb' }, borderWidth: 1 },
+      edges: { color: { color: '#94a3b8' }, smooth: { type: 'dynamic' } },
+    };
+    new vis.Network(container, data, options);
+  </script>
+</body>
+</html>
