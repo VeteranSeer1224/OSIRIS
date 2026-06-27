@@ -1,0 +1,27 @@
+[
+  {
+    "type": "DOMAIN_NAME",
+    "data": "example.com",
+    "module": "sfp_dns"
+  },
+  {
+    "type": "DNS_MX",
+    "data": "mail.example.com",
+    "module": "sfp_dns"
+  },
+  {
+    "type": "BGP_AS",
+    "data": "AS15169",
+    "module": "sfp_bgp"
+  },
+  {
+    "type": "SSL_CERTIFICATE_RAW",
+    "data": "certificate-data",
+    "module": "sfp_ssl"
+  },
+  {
+    "type": "CUSTOM_ENTITY",
+    "data": "unknown-value",
+    "module": "sfp_custom"
+  }
+]

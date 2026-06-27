@@ -1,140 +1,180 @@
 import json
-import csv
-import argparse
 from datetime import datetime, timezone
-import re
+from pathlib import Path
 
-def load_spiderfoot_data(filepath):
-    """Loads raw SpiderFoot export data and standardizes keys to lowercase."""
-    raw_data = []
-    try:
-        if filepath.endswith('.json'):
-            with open(filepath, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                # Standardize JSON keys to lowercase
-                raw_data = [{k.lower(): v for k, v in item.items()} for item in data]
-                
-        elif filepath.endswith('.csv'):
-            with open(filepath, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                # Standardize CSV headers to lowercase
-                for row in reader:
-                    clean_row = {k.lower(): v for k, v in row.items() if k is not None}
-                    raw_data.append(clean_row)
-        else:
-            print("Unsupported file format. Please provide a .json or .csv export.")
-    except Exception as e:
-        print(f"Error loading file: {e}")
-    return raw_data
+ENTITY_MAP = {
+    "INTERNET_NAME": "domain",
+    "DOMAIN_NAME": "domain",
+    "AFFILIATE_INTERNET_NAME": "domain",
+    "CO_HOSTED_SITE": "domain",
+
+    "IP_ADDRESS": "ip",
+    "IPV6_ADDRESS": "ip",
+
+    "EMAILADDR": "email",
+    "ACCOUNT_EXTERNAL": "social_profile",
+    "USERNAME": "username",
+
+    "PHONE_NUMBER": "phone",
+    "PHYSICAL_ADDRESS": "address",
+
+    "BGP_AS": "asn",
+    "BGP_AS_OWNER": "organization",
+    "BGP_AS_MEMBER": "organization",
+    "NETBLOCK_OWNER": "organization",
+
+    "SSL_CERTIFICATE_RAW": "certificate",
+    "SSL_CERTIFICATE_ISSUED": "certificate",
+
+    "WEBSERVER_TECHNOLOGY": "technology",
+    "SOFTWARE_USED": "technology",
+
+    "DNS_TEXT": "dns_record",
+    "DNS_MX": "dns_record",
+    "DNS_NS": "dns_record",
+    "DNS_SPF": "dns_record",
+    "DNS_AAAA": "dns_record",
+    "DNS_CNAME": "dns_record",
+    "DNS_A": "dns_record",
+
+    "CRYPTOCURRENCY_ADDRESS": "crypto_wallet",
+}
+
 
 def get_osiris_type(sf_type):
-    """Fuzzy matching to catch prefixed SpiderFoot types (e.g., AFFILIATE_INTERNET_NAME)."""
-    sf_type = sf_type.upper()
-    if 'INTERNET_NAME' in sf_type or 'DOMAIN_NAME' in sf_type:
-        return 'domain'
-    if 'IP_ADDRESS' in sf_type or 'IPV6_ADDRESS' in sf_type:
-        return 'ip'
-    if 'EMAILADDR' in sf_type:
-        return 'email'
-    if 'ACCOUNT_EXTERNAL' in sf_type:
-        return 'social_profile'
-    return None
+    sf_type = (sf_type or "").upper()
+
+    for key, value in ENTITY_MAP.items():
+        if key in sf_type:
+            return value
+
+    return "unknown"
+
 
 def normalize_entities(raw_data):
-    """Maps SpiderFoot's messy data types into OSIRIS Contract 1 entities."""
     entities = []
-    seen_values = set()
+    unknown_entities = []
+
+    seen = set()
 
     for item in raw_data:
-        sf_type = item.get('type', '')
-        sf_value = item.get('data', '')
-        
-        # Determine platform if it's a social profile
-        platform = None
-        if 'ACCOUNT_EXTERNAL' in sf_type.upper():
-            if 'github.com' in sf_value.lower():
-                platform = 'github'
-            elif 'twitter.com' in sf_value.lower() or 'x.com' in sf_value.lower():
-                platform = 'twitter'
+        sf_type = item.get("type", "")
+        sf_value = item.get("data", "")
 
-        # Subdomain check
+        if not sf_value:
+            continue
+
         osiris_type = get_osiris_type(sf_type)
-        if osiris_type == 'domain' and sf_value.count('.') > 1:
-            osiris_type = 'subdomain'
 
-        if osiris_type and sf_value not in seen_values:
-            entity = {"type": osiris_type, "value": sf_value}
-            if platform:
-                entity["platform"] = platform
-            
-            entities.append(entity)
-            seen_values.add(sf_value)
-            
-    return entities
+        if osiris_type == "unknown":
+            unknown_entities.append({
+                "module": item.get("module"),
+                "type": sf_type,
+                "value": sf_value,
+                "source": item.get("source")
+            })
+            continue
+
+        key = (osiris_type, sf_value)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        entities.append({
+            "type": osiris_type,
+            "value": sf_value,
+            "source_module": item.get("module"),
+            "source": item.get("source")
+        })
+
+    return entities, unknown_entities
+
 
 def extract_events(raw_data):
-    """Extracts specific events like WHOIS dates and breach timestamps."""
     events = []
-    
+
     for item in raw_data:
-        sf_type = item.get('type', '').upper()
-        sf_data = item.get('data', '')
-        sf_module = item.get('module', '').lower()
+        sf_type = item.get("type", "")
+        value = item.get("data", "")
 
-        # Extract WHOIS Registration Dates (Catches DOMAIN_WHOIS, AFFILIATE_DOMAIN_WHOIS, etc.)
-        if 'DOMAIN_WHOIS' in sf_type and 'Creation Date' in sf_data:
-            match = re.search(r'Creation Date:.*?(\d{4}-\d{2}-\d{2})', sf_data)
-            if match:
-                events.append({
-                    "date": match.group(1),
-                    "type": "domain_registered",
-                    "entity": item.get('source', 'unknown_domain') # 'source' column in CSV holds the root domain
-                })
+        sf_upper = sf_type.upper()
 
-        # Extract Data Breach Appearances
-        if 'LEAKSITE_CONTENT' in sf_type or 'haveibeenpwned' in sf_module:
-            match = re.search(r'(\d{4}-\d{2}-\d{2})', sf_data)
+        if "DOMAIN_REGISTRAR" in sf_upper:
             events.append({
-                "date": match.group(1) if match else "Unknown",
-                "type": "breach_appearance",
-                "entity": item.get('source', 'unknown_email'),
-                "source": sf_module
+                "event_type": "domain_registration",
+                "value": value
+            })
+
+        elif "DOMAIN_WHOIS" in sf_upper:
+            events.append({
+                "event_type": "whois_record",
+                "value": value
+            })
+
+        elif "SSL_CERTIFICATE" in sf_upper:
+            events.append({
+                "event_type": "certificate_discovered",
+                "value": value
+            })
+
+        elif "DNS" in sf_upper:
+            events.append({
+                "event_type": "dns_record_discovered",
+                "value": value
+            })
+
+        elif "BREACH" in sf_upper:
+            events.append({
+                "event_type": "breach",
+                "value": value
             })
 
     return events
 
-def generate_raw_scan(target, raw_filepath):
-    """Main function to generate the raw_scan.json contract."""
-    raw_data = load_spiderfoot_data(raw_filepath)
-    
-    if not raw_data:
-        return None
 
-    # Construct the final JSON shape mandated by Contract 1
-    osiris_scan = {
+def generate_raw_scan(target, spiderfoot_json):
+    if isinstance(spiderfoot_json, str):
+        with open(spiderfoot_json, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+    else:
+        raw_data = spiderfoot_json
+
+    entities, unknown_entities = normalize_entities(raw_data)
+
+    return {
         "target": target,
-        "scan_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "entities": normalize_entities(raw_data),
+        "scan_date": datetime.now(
+            timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+
+        "entities": entities,
         "events": extract_events(raw_data),
+
         "raw_module_output": {
-            "note": "untouched SpiderFoot export, kept for audit trail",
-            "raw_record_count": len(raw_data)
+            "note": "Untouched SpiderFoot export preserved for audit.",
+            "raw_record_count": len(raw_data),
+            "records": raw_data,
+            "unknown_entities": unknown_entities
         }
     }
-    
-    return osiris_scan
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Normalize SpiderFoot output into OSIRIS Contract 1.")
-    parser.add_argument("-t", "--target", required=True, help="The scan target (e.g., example.com)")
-    parser.add_argument("-i", "--input", required=True, help="Path to raw SpiderFoot JSON/CSV export")
-    parser.add_argument("-o", "--output", default="raw_scan.json", help="Output file path")
-    
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("target")
+    parser.add_argument("input")
+    parser.add_argument("output")
+
     args = parser.parse_args()
-    
-    final_contract = generate_raw_scan(args.target, args.input)
-    
-    if final_contract:
-        with open(args.output, "w", encoding="utf-8") as f:
-            json.dump(final_contract, f, indent=2)
-        print(f"Success! Normalized data saved to {args.output}")
+
+    scan = generate_raw_scan(
+        args.target,
+        args.input
+    )
+
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(scan, f, indent=4)
