@@ -1,0 +1,760 @@
+#!/usr/bin/env python3
+"""
+OSIRIS Stage 4 — explabox_wrapper.py
+
+This module is the adapter layer between OSIRIS and the explainability stack.
+It is intentionally split into two concerns:
+
+1. A stable, project-facing interface for Stage 4.
+2. A backend implementation that can later be swapped from the deterministic
+   fallback to the real Explabox integration without changing the public API.
+
+Important design notes
+----------------------
+- This file does NOT generate reports.
+- This file does NOT write project output JSON files.
+- This file returns structured Python dictionaries only.
+- The real Explabox API is not assumed here because it is not pinned in the
+  repository. A deterministic fallback backend is provided so the wrapper is
+  usable now and can be replaced later.
+
+Expected upstream inputs
+-------------------------
+- Person B's `dossier.json` contract output.
+- Optionally a batch of dossier-like dictionaries for dataset-level analysis.
+
+Public API
+----------
+- ExplaboxWrapper.initialize()
+- ExplaboxWrapper.explore(...)
+- ExplaboxWrapper.examine(...)
+- ExplaboxWrapper.explain(...)
+- ExplaboxWrapper.expose(...)
+- ExplaboxWrapper.analyze(...)
+
+The wrapper also accepts a custom predictor adapter. By default it will derive
+scores from the dossier structure itself, which keeps Stage 4 runnable in the
+absence of the real model/backend.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import logging
+import math
+import statistics
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Protocol, Sequence, Tuple, Union
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [OSIRIS-Conscience] %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+
+JSONDict = Dict[str, Any]
+DossierLike = Mapping[str, Any]
+DossierInput = Union[DossierLike, str, Path]
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_RISK_THRESHOLD = 70
+DEFAULT_FAIRNESS_VARIANTS = ("identity", "geo_temporal", "technical_stack")
+DEFAULT_ROBUSTNESS_PERTURBATIONS = (
+    "whitespace",
+    "punctuation",
+    "case",
+)
+
+
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_json(source: DossierInput) -> JSONDict:
+    """Load a JSON dict from a mapping, file path, or JSON string."""
+    if isinstance(source, Mapping):
+        return dict(source)
+
+    if isinstance(source, Path):
+        return json.loads(source.read_text(encoding="utf-8"))
+
+    if isinstance(source, str):
+        candidate = Path(source)
+        if candidate.exists():
+            return json.loads(candidate.read_text(encoding="utf-8"))
+        return json.loads(source)
+
+    raise TypeError(f"Unsupported input type: {type(source)!r}")
+
+
+def _ensure_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _safe_str(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+def _clip_score(score: float) -> int:
+    return int(max(0, min(100, round(score))))
+
+
+def _mean_or_zero(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
+# ---------------------------------------------------------------------------
+# Model / predictor adapter
+# ---------------------------------------------------------------------------
+
+
+class PredictorProtocol(Protocol):
+    """Minimal protocol expected by the wrapper."""
+
+    def predict(self, text: str) -> float:
+        ...
+
+
+@dataclass
+class PredictorAdapter:
+    """Normalize a variety of callable predictor styles to one interface.
+
+    Person B may expose one of several likely shapes:
+    - predict(text: str) -> score
+    - score(text: str) -> score
+    - __call__(text: str) -> score
+    - predict(payload: dict) -> score
+
+    The adapter tries these in a safe order. The goal is not to guess the
+    final Explabox contract; the goal is to keep the wrapper stable while the
+    model backend changes.
+    """
+
+    predictor: Any
+
+    def predict(self, text: str, payload: Optional[Mapping[str, Any]] = None) -> float:
+        predictor = self.predictor
+
+        # Common case: callable predictor with text-only interface.
+        if hasattr(predictor, "predict"):
+            try:
+                result = predictor.predict(text)
+                return float(result)
+            except TypeError:
+                if payload is not None:
+                    try:
+                        result = predictor.predict(payload)
+                        return float(result)
+                    except Exception as exc:  # pragma: no cover - defensive fallback
+                        raise RuntimeError(f"predictor.predict failed: {exc}") from exc
+
+        # Alternative common names.
+        if hasattr(predictor, "score"):
+            try:
+                return float(predictor.score(text))
+            except TypeError:
+                if payload is not None:
+                    return float(predictor.score(payload))
+
+        # Callable object.
+        if callable(predictor):
+            try:
+                return float(predictor(text))
+            except TypeError:
+                if payload is not None:
+                    return float(predictor(payload))
+
+        raise TypeError(
+            "Unsupported predictor interface. Expected predict(text), score(text), or a callable."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dossier conversion helpers
+# ---------------------------------------------------------------------------
+
+
+def dossier_to_text(dossier: Mapping[str, Any]) -> str:
+    """Convert a dossier into a compact text block for explainability backends.
+
+    Many explainability frameworks operate on a text input or a feature string.
+    This function is intentionally deterministic so that the same dossier
+    always converts to the same explanation text.
+    """
+    profile = dossier.get("profile", {}) if isinstance(dossier.get("profile"), Mapping) else {}
+    risk_features = dossier.get("risk_features", []) or []
+    flags = dossier.get("insufficient_data_flags", []) or []
+
+    parts: List[str] = []
+    parts.append(f"target: {_safe_str(dossier.get('target'), 'unknown')}")
+    parts.append(f"risk_score: {_safe_str(dossier.get('risk_score'), '0')}")
+    parts.append(f"risk_level: {_safe_str(dossier.get('risk_level'), 'unknown')}")
+    parts.append(f"identity: {_safe_str(profile.get('identity'), '')}")
+    parts.append(f"geo_temporal: {_safe_str(profile.get('geo_temporal'), '')}")
+    parts.append(f"technical_stack: {', '.join(_ensure_list(profile.get('technical_stack')))}")
+    parts.append(f"ideology: {_safe_str(profile.get('ideology'), 'none')}")
+    parts.append(f"opsec_posture: {_safe_str(profile.get('opsec_posture'), '')}")
+
+    if isinstance(profile.get("ocean_psychology"), Mapping):
+        ocean = profile["ocean_psychology"]
+        for key in ("openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"):
+            if key in ocean:
+                parts.append(f"ocean_{key}: {_safe_str(ocean.get(key), '')}")
+
+    for feature in risk_features:
+        if isinstance(feature, Mapping):
+            parts.append(
+                "feature: "
+                f"{_safe_str(feature.get('feature'))}="
+                f"{_safe_str(feature.get('value'))} weight={_safe_str(feature.get('weight'))}"
+            )
+
+    if flags:
+        for flag in flags:
+            if isinstance(flag, Mapping):
+                parts.append(
+                    f"insufficient_data: {_safe_str(flag.get('dimension'))} {_safe_str(flag.get('reason'))}"
+                )
+
+    return "\n".join(parts)
+
+
+def _feature_plain_language(feature: Mapping[str, Any]) -> str:
+    """Best-effort plain-language description for a risk feature."""
+    if "plain_language" in feature and feature["plain_language"]:
+        return _safe_str(feature["plain_language"])
+
+    name = _safe_str(feature.get("feature"), "feature")
+    value = feature.get("value")
+    weight = feature.get("weight")
+
+    if isinstance(value, (int, float)):
+        value_text = str(value)
+    else:
+        value_text = _safe_str(value, "unknown")
+
+    direction = "increased" if isinstance(weight, (int, float)) and weight >= 0 else "decreased"
+    return f"{name}={value_text} {direction} the score."
+
+
+# ---------------------------------------------------------------------------
+# Deterministic fallback backend
+# ---------------------------------------------------------------------------
+
+
+class DeterministicExplaboxBackend:
+    """Fallback backend that mimics the shape of an explainability pipeline.
+
+    This is not the real Explabox implementation. It provides predictable,
+    structured outputs so the Stage 4 contract can be built and tested now.
+    """
+
+    name = "deterministic_fallback"
+
+    def __init__(self, predictor: Optional[PredictorAdapter] = None, risk_threshold: int = DEFAULT_RISK_THRESHOLD):
+        self.predictor = predictor
+        self.risk_threshold = risk_threshold
+        self.initialized = False
+
+    def initialize(self) -> JSONDict:
+        self.initialized = True
+        return {
+            "backend": self.name,
+            "initialized": True,
+            "note": "Deterministic fallback backend. Replace with real Explabox integration later.",
+        }
+
+    def explore(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
+        scores = [float(d.get("risk_score", 0)) for d in dossiers if isinstance(d, Mapping)]
+        targets = [str(d.get("target", "")) for d in dossiers if isinstance(d, Mapping)]
+        features = []
+        for d in dossiers:
+            if isinstance(d, Mapping):
+                for feature in d.get("risk_features", []) or []:
+                    if isinstance(feature, Mapping):
+                        features.append(_safe_str(feature.get("feature"), "unknown_feature"))
+
+        return {
+            "backend": self.name,
+            "sample_count": len(dossiers),
+            "unique_targets": sorted({t for t in targets if t}),
+            "score_summary": {
+                "min": _clip_score(min(scores)) if scores else 0,
+                "max": _clip_score(max(scores)) if scores else 0,
+                "mean": round(_mean_or_zero(scores), 2),
+                "median": round(statistics.median(scores), 2) if scores else 0,
+            },
+            "feature_frequency": self._frequency_map(features),
+        }
+
+    def examine(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
+        missing_target = 0
+        missing_score = 0
+        schema_warnings: List[str] = []
+
+        for idx, dossier in enumerate(dossiers):
+            if not isinstance(dossier, Mapping):
+                schema_warnings.append(f"sample[{idx}] is not a mapping")
+                continue
+            if not dossier.get("target"):
+                missing_target += 1
+            if dossier.get("risk_score") is None:
+                missing_score += 1
+            if not isinstance(dossier.get("risk_features", []), list):
+                schema_warnings.append(f"sample[{idx}].risk_features is not a list")
+
+        quality_score = max(0, 100 - (missing_target * 10) - (missing_score * 10) - (len(schema_warnings) * 5))
+        return {
+            "backend": self.name,
+            "quality_score": quality_score,
+            "missing_target_count": missing_target,
+            "missing_score_count": missing_score,
+            "warnings": schema_warnings,
+        }
+
+    def explain(self, dossier: Mapping[str, Any]) -> JSONDict:
+        """Return a structured explanation for one dossier."""
+        text = dossier_to_text(dossier)
+        prediction = self._predict_score(dossier, text)
+        top_features = self._top_features(dossier)
+
+        return {
+            "backend": self.name,
+            "target": _safe_str(dossier.get("target"), "unknown"),
+            "prediction": prediction,
+            "top_features": top_features,
+            "text_basis": text,
+        }
+
+    def expose(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
+        """Run simple fairness and robustness checks over dossier variants."""
+        fairness = self._fairness_check(dossiers)
+        robustness = self._robustness_check(dossiers)
+        return {
+            "backend": self.name,
+            "fairness": fairness,
+            "robustness": robustness,
+        }
+
+    # ------------------------------------------------------------------
+    # Internal helpers for the fallback backend
+    # ------------------------------------------------------------------
+
+    def _predict_score(self, dossier: Mapping[str, Any], text: str) -> int:
+        if self.predictor is not None:
+            try:
+                return _clip_score(self.predictor.predict(text, payload=dossier))
+            except Exception:
+                pass
+
+        # Deterministic heuristic based on risk score and the weighted features.
+        base = float(dossier.get("risk_score", 0) or 0)
+        features = dossier.get("risk_features", []) or []
+        contribution = 0.0
+        for feature in features:
+            if isinstance(feature, Mapping):
+                weight = feature.get("weight", 0)
+                value = feature.get("value", 0)
+                if isinstance(weight, (int, float)):
+                    if isinstance(value, (int, float)):
+                        contribution += float(weight) * float(value)
+                    else:
+                        contribution += float(weight) * 1.0
+        return _clip_score(base + contribution * 10)
+
+    def _top_features(self, dossier: Mapping[str, Any]) -> List[JSONDict]:
+        features = dossier.get("risk_features", []) or []
+        scored: List[Tuple[float, JSONDict]] = []
+        for feature in features:
+            if not isinstance(feature, Mapping):
+                continue
+            weight = float(feature.get("weight", 0) or 0)
+            scored.append(
+                (
+                    abs(weight),
+                    {
+                        "feature": _safe_str(feature.get("feature"), "unknown_feature"),
+                        "value": feature.get("value"),
+                        "weight": weight,
+                        "plain_language": _feature_plain_language(feature),
+                    },
+                )
+            )
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [item[1] for item in scored[:5]]
+
+    def _fairness_check(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
+        """Synthetic fairness check by perturbing identity-like fields."""
+        if not dossiers:
+            return {
+                "passed": True,
+                "notes": "No dossiers supplied.",
+                "max_score_delta": 0,
+                "evaluated_variants": 0,
+            }
+
+        deltas: List[float] = []
+        notes: List[str] = []
+
+        for dossier in dossiers:
+            if not isinstance(dossier, Mapping):
+                continue
+            base_score = self._predict_score(dossier, dossier_to_text(dossier))
+            for field in DEFAULT_FAIRNESS_VARIANTS:
+                perturbed = self._perturb_field(copy.deepcopy(dict(dossier)), field)
+                pert_score = self._predict_score(perturbed, dossier_to_text(perturbed))
+                delta = abs(base_score - pert_score)
+                deltas.append(delta)
+                notes.append(f"{field}: Δ={delta}")
+
+        max_delta = max(deltas) if deltas else 0
+        passed = max_delta <= 5
+        return {
+            "passed": passed,
+            "max_score_delta": max_delta,
+            "evaluated_variants": len(deltas),
+            "notes": notes[:10],
+        }
+
+    def _robustness_check(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
+        """Synthetic robustness test under minor text perturbations."""
+        if not dossiers:
+            return {
+                "passed": True,
+                "notes": "No dossiers supplied.",
+                "max_score_delta": 0,
+                "evaluated_variants": 0,
+            }
+
+        deltas: List[float] = []
+        notes: List[str] = []
+        for dossier in dossiers:
+            if not isinstance(dossier, Mapping):
+                continue
+            base_text = dossier_to_text(dossier)
+            base_score = self._predict_score(dossier, base_text)
+            for perturbation in DEFAULT_ROBUSTNESS_PERTURBATIONS:
+                pert_text = self._perturb_text(base_text, perturbation)
+                pert_score = self._predict_score(dossier, pert_text)
+                delta = abs(base_score - pert_score)
+                deltas.append(delta)
+                notes.append(f"{perturbation}: Δ={delta}")
+
+        max_delta = max(deltas) if deltas else 0
+        passed = max_delta <= 5
+        return {
+            "passed": passed,
+            "max_score_delta": max_delta,
+            "evaluated_variants": len(deltas),
+            "notes": notes[:10],
+        }
+
+    @staticmethod
+    def _frequency_map(values: Sequence[str]) -> JSONDict:
+        counts: Dict[str, int] = {}
+        for value in values:
+            counts[value] = counts.get(value, 0) + 1
+        return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+    @staticmethod
+    def _perturb_field(dossier: MutableMapping[str, Any], field: str) -> MutableMapping[str, Any]:
+        profile = dossier.get("profile", {})
+        if not isinstance(profile, MutableMapping):
+            return dossier
+
+        if field == "identity":
+            current = _safe_str(profile.get("identity"), "")
+            profile["identity"] = current.replace("John", "Alex").replace("John Doe", "Alex Roe") or "Altered identity"
+        elif field == "geo_temporal":
+            current = _safe_str(profile.get("geo_temporal"), "")
+            profile["geo_temporal"] = current.replace("India", "Singapore").replace("US", "UK") or "Altered geo-temporal context"
+        elif field == "technical_stack":
+            stack = _ensure_list(profile.get("technical_stack"))
+            profile["technical_stack"] = list(reversed(stack)) if stack else ["unknown_stack"]
+        dossier["profile"] = profile
+        return dossier
+
+    @staticmethod
+    def _perturb_text(text: str, mode: str) -> str:
+        if mode == "whitespace":
+            return " ".join(text.split())
+        if mode == "punctuation":
+            return text.replace(",", "").replace(":", "")
+        if mode == "case":
+            return text.swapcase()
+        return text
+
+
+# ---------------------------------------------------------------------------
+# Real-backend bridge (optional)
+# ---------------------------------------------------------------------------
+
+
+class RealExplaboxBridge:
+    """Placeholder bridge for the real Explabox implementation.
+
+    This class intentionally raises until someone wires the actual library.
+    It exists so the public interface is stable and the later integration issue
+    has a clear insertion point.
+    """
+
+    name = "real_explabox"
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        raise NotImplementedError(
+            "Real Explabox integration is not wired yet. Use the deterministic fallback backend for now."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Main wrapper
+# ---------------------------------------------------------------------------
+
+
+class ExplaboxWrapper:
+    """Project-facing Stage 4 wrapper.
+
+    Public methods return structured dictionaries and never write report files.
+    """
+
+    def __init__(
+        self,
+        predictor: Optional[Any] = None,
+        backend: Optional[Any] = None,
+        risk_threshold: int = DEFAULT_RISK_THRESHOLD,
+    ):
+        self.predictor = PredictorAdapter(predictor) if predictor is not None else None
+        self.risk_threshold = risk_threshold
+        self.backend = backend or DeterministicExplaboxBackend(
+            predictor=self.predictor,
+            risk_threshold=risk_threshold,
+        )
+        self.initialized = False
+        self.last_initialize_payload: Optional[JSONDict] = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def initialize(self) -> JSONDict:
+        """Initialize the backend once."""
+        if self.initialized:
+            return {
+                "initialized": True,
+                "backend": getattr(self.backend, "name", type(self.backend).__name__),
+                "cached": True,
+            }
+
+        if hasattr(self.backend, "initialize"):
+            payload = self.backend.initialize()
+            if isinstance(payload, Mapping):
+                self.last_initialize_payload = dict(payload)
+        else:
+            payload = {
+                "backend": getattr(self.backend, "name", type(self.backend).__name__),
+                "initialized": True,
+            }
+            self.last_initialize_payload = dict(payload)
+
+        self.initialized = True
+        return dict(payload) if isinstance(payload, Mapping) else {
+            "backend": getattr(self.backend, "name", type(self.backend).__name__),
+            "initialized": True,
+        }
+
+    # ------------------------------------------------------------------
+    # Dataset level operations
+    # ------------------------------------------------------------------
+
+    def explore(self, dossiers: Sequence[DossierInput]) -> JSONDict:
+        """Dataset overview: counts, score summary, feature frequency."""
+        items = [self._coerce_dossier(item) for item in dossiers]
+        self._ensure_initialized()
+        if hasattr(self.backend, "explore"):
+            return self.backend.explore(items)
+        return {
+            "backend": getattr(self.backend, "name", type(self.backend).__name__),
+            "sample_count": len(items),
+        }
+
+    def examine(self, dossiers: Sequence[DossierInput]) -> JSONDict:
+        """Dataset health: missing fields, malformed items, warnings."""
+        items = [self._coerce_dossier(item) for item in dossiers]
+        self._ensure_initialized()
+        if hasattr(self.backend, "examine"):
+            return self.backend.examine(items)
+        return {
+            "backend": getattr(self.backend, "name", type(self.backend).__name__),
+            "quality_score": 100,
+        }
+
+    def expose(self, dossiers: Sequence[DossierInput]) -> JSONDict:
+        """Fairness and robustness checks across a dossier set."""
+        items = [self._coerce_dossier(item) for item in dossiers]
+        self._ensure_initialized()
+        if hasattr(self.backend, "expose"):
+            return self.backend.expose(items)
+        return {
+            "backend": getattr(self.backend, "name", type(self.backend).__name__),
+            "fairness": {"passed": True, "notes": "Unavailable backend; no-op fallback."},
+            "robustness": {"passed": True, "notes": "Unavailable backend; no-op fallback."},
+        }
+
+    # ------------------------------------------------------------------
+    # Single-dossier explainability
+    # ------------------------------------------------------------------
+
+    def explain(self, dossier: DossierInput) -> JSONDict:
+        """Explain one dossier."""
+        item = self._coerce_dossier(dossier)
+        self._ensure_initialized()
+        if hasattr(self.backend, "explain"):
+            return self.backend.explain(item)
+        return {
+            "backend": getattr(self.backend, "name", type(self.backend).__name__),
+            "target": _safe_str(item.get("target"), "unknown"),
+            "prediction": _clip_score(item.get("risk_score", 0) or 0),
+            "top_features": [],
+        }
+
+    # ------------------------------------------------------------------
+    # High-level orchestration
+    # ------------------------------------------------------------------
+
+    def analyze(self, dossier: DossierInput, cohort: Optional[Sequence[DossierInput]] = None) -> JSONDict:
+        """Run initialize, explore, examine, explain, and expose.
+
+        Parameters
+        ----------
+        dossier:
+            Primary dossier to explain.
+        cohort:
+            Optional batch for dataset-level analysis. If omitted, the single
+            dossier is used as the cohort so the result remains useful.
+        """
+        primary = self._coerce_dossier(dossier)
+        batch = [self._coerce_dossier(item) for item in (cohort or [primary])]
+
+        initialize_payload = self.initialize()
+        explore_payload = self.explore(batch)
+        examine_payload = self.examine(batch)
+        explain_payload = self.explain(primary)
+        expose_payload = self.expose(batch)
+
+        return {
+            "initialize": initialize_payload,
+            "explore": explore_payload,
+            "examine": examine_payload,
+            "explain": explain_payload,
+            "expose": expose_payload,
+        }
+
+    # ------------------------------------------------------------------
+    # Conversion / validation
+    # ------------------------------------------------------------------
+
+    def _coerce_dossier(self, item: DossierInput) -> JSONDict:
+        dossier = _load_json(item)
+        return self._validate_dossier_shape(dossier)
+
+    def _validate_dossier_shape(self, dossier: MutableMapping[str, Any]) -> JSONDict:
+        """Validate the minimum fields needed by the wrapper.
+
+        This is intentionally lighter than the full shared-schema validation so
+        the wrapper remains usable even if the Pydantic layer changes later.
+        """
+        required_top_level = ("target", "profile", "risk_score", "risk_features")
+        missing = [field for field in required_top_level if field not in dossier]
+        if missing:
+            raise ValueError(f"Dossier missing required fields: {', '.join(missing)}")
+
+        if not isinstance(dossier.get("profile"), Mapping):
+            raise TypeError("dossier['profile'] must be a mapping")
+
+        if not isinstance(dossier.get("risk_features"), list):
+            raise TypeError("dossier['risk_features'] must be a list")
+
+        # Normalize a few common field shapes so downstream methods have a
+        # predictable structure.
+        dossier = dict(dossier)
+        dossier["risk_features"] = [f for f in dossier.get("risk_features", []) if isinstance(f, Mapping)]
+        dossier["insufficient_data_flags"] = [f for f in _ensure_list(dossier.get("insufficient_data_flags")) if isinstance(f, Mapping)]
+        return dossier
+
+    def _ensure_initialized(self) -> None:
+        if not self.initialized:
+            self.initialize()
+
+
+# ---------------------------------------------------------------------------
+# Convenience functions
+# ---------------------------------------------------------------------------
+
+
+def build_wrapper(predictor: Optional[Any] = None, backend: Optional[Any] = None) -> ExplaboxWrapper:
+    return ExplaboxWrapper(predictor=predictor, backend=backend)
+
+
+def run_analysis(input_path: DossierInput, output_path: Optional[Union[str, Path]] = None) -> JSONDict:
+    """CLI-friendly helper that loads one dossier and runs the wrapper."""
+    wrapper = ExplaboxWrapper()
+    result = wrapper.analyze(input_path)
+
+    if output_path is not None:
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="OSIRIS Stage 4 Explabox wrapper")
+    parser.add_argument("--input", required=True, help="Path to dossier.json or a JSON string")
+    parser.add_argument("--output", help="Optional output path for the structured analysis JSON")
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+
+    result = run_analysis(args.input, args.output)
+    if args.output is None:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

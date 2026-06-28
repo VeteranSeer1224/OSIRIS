@@ -1,0 +1,7 @@
+[
+  {
+    "type": "DOMAIN_WHOIS",
+    "data": "Registrar: NameCheap",
+    "module": "sfp_whois"
+  }
+]

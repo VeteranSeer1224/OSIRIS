@@ -1,0 +1,7 @@
+[
+  {
+    "type": "DOMAIN_NAME",
+    "data": "example.com",
+    "module": "sfp_dns"
+  }
+]
