@@ -85,8 +85,11 @@ def normalize_entities(raw_data):
         entities.append({
             "type": osiris_type,
             "value": sf_value,
-            "source_module": item.get("module"),
-            "source": item.get("source")
+            "platform": None,
+            "metadata": {
+                "source_module": item.get("module"),
+                "source": item.get("source")
+            }
         })
 
     return entities, unknown_entities
@@ -94,41 +97,36 @@ def normalize_entities(raw_data):
 
 def extract_events(raw_data):
     events = []
+    
+    current_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for item in raw_data:
         sf_type = item.get("type", "")
         value = item.get("data", "")
+        module = item.get("module", "")
 
         sf_upper = sf_type.upper()
+        
+        event_type = None
 
         if "DOMAIN_REGISTRAR" in sf_upper:
-            events.append({
-                "event_type": "domain_registration",
-                "value": value
-            })
-
+            event_type = "domain_registered"
         elif "DOMAIN_WHOIS" in sf_upper:
-            events.append({
-                "event_type": "whois_record",
-                "value": value
-            })
-
+            event_type = "whois_update"
         elif "SSL_CERTIFICATE" in sf_upper:
-            events.append({
-                "event_type": "certificate_discovered",
-                "value": value
-            })
-
+            event_type = "certificate_issued"
         elif "DNS" in sf_upper:
-            events.append({
-                "event_type": "dns_record_discovered",
-                "value": value
-            })
-
+            event_type = "dns_change"
         elif "BREACH" in sf_upper:
+            event_type = "breach_appearance"
+            
+        if event_type:
             events.append({
-                "event_type": "breach",
-                "value": value
+                "date": current_time,
+                "type": event_type,
+                "entity": value,
+                "source": module,
+                "detail": f"Derived from {sf_type}"
             })
 
     return events

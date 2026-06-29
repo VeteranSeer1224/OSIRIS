@@ -178,7 +178,7 @@ class DeepSeekBackend(LLMBackend):
                 "DEEPSEEK_API_KEY not set. "
                 "Get a key at https://platform.deepseek.com/api-keys"
             )
-        self.client = _openai_sdk.OpenAI(
+        self.client = OpenAI(
             api_key=api_key,
             base_url=self.BASE_URL,
         )

@@ -25,19 +25,30 @@ RAW_SCAN_SCHEMA = {
                     "value"
                 ],
                 "properties": {
-                    "type": {
-                        "type": "string"
-                    },
-                    "value": {
-                        "type": "string"
-                    },
-                    "source": {},
-                    "source_module": {}
+                    "type": { "type": "string" },
+                    "value": { "type": "string" },
+                    "platform": { "type": ["string", "null"] },
+                    "metadata": { "type": ["object", "null"] }
                 }
             }
         },
         "events": {
-            "type": "array"
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "date",
+                    "type",
+                    "entity"
+                ],
+                "properties": {
+                    "date": { "type": "string" },
+                    "type": { "type": "string" },
+                    "entity": { "type": "string" },
+                    "source": { "type": ["string", "null"] },
+                    "detail": { "type": ["string", "null"] }
+                }
+            }
         },
         "raw_module_output": {
             "type": "object"

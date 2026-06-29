@@ -22,12 +22,23 @@
 * [cite_start]**Environment:** Development is standardized on WSL2 (Ubuntu) with Python 3.11[cite: 301].
 * [cite_start]**Repository Location:** It is highly recommended to clone the repository directly into the Linux filesystem (`~/osiris`) rather than `/mnt/c/` to avoid severe performance issues during Git and Pip operations[cite: 231, 232].
 * [cite_start]**System Dependencies:** You must run the `setup.sh` script to install system requirements, including WeasyPrint prerequisites (`libpango-1.0-0` and `libpangocairo-1.0-0`), before attempting to install the Python packages[cite: 230, 231].
+* **Python Dependencies:** Run `pip install -r requirements.txt`.
+
+## 🏃 Running the Pipeline
+
+You can run the full pipeline in one command using `run_pipeline.py`. This script handles ingestion, validation, and Stage 5 reporting (PDF and MISP export).
+
+```bash
+python run_pipeline.py --target example.com --input schemas/samples/sample_raw_scan.json --output-dir outputs/ --export-pdf --export-misp
+```
 
 ## 🔄 Data Flow & Shared Contracts
 
 [cite_start]The system passes data between stages using strict JSON contracts, which allows all team members to develop their modules concurrently[cite: 257, 265]. The execution flow is as follows:
 
-[cite_start]`OSIRIS-Sense` → `raw_scan.json` → `OSIRIS-Mind` → `dossier.json` → `OSIRIS-Web` → `graph.html` → `OSIRIS-Conscience` → `explanation_cards.json` → `OSIRIS-Report` → `final_report.pdf` + `misp_export.json`[cite: 266].
+[cite_start]`OSIRIS-Sense` → `raw_scan.json` → `OSIRIS-Mind` → `dossier.json` → `OSIRIS-Conscience` → `explanation_cards.json` → `OSIRIS-Report` → `final_report.pdf` + `misp_export.json`[cite: 266].
+
+**Note on Stage 3 (Graph Intelligence)**: The OSIRIS-Web graph module directly consumes `raw_scan.json` (rather than `dossier.json`) to visualize the raw infrastructure and identity relationships immediately after ingestion.
 
 ## ⚖️ Ethical Safeguards & Rules of Engagement
 
