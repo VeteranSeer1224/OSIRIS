@@ -44,6 +44,7 @@ import copy
 import json
 import logging
 import math
+import os
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -551,10 +552,13 @@ class ExplaboxWrapper:
     ):
         self.predictor = PredictorAdapter(predictor) if predictor is not None else None
         self.risk_threshold = risk_threshold
-        self.backend = backend or DeterministicExplaboxBackend(
-            predictor=self.predictor,
-            risk_threshold=risk_threshold,
-        )
+        if os.getenv("USE_EXPLABOX_BACKEND") == "1":
+            self.backend = backend or RealExplaboxBridge()
+        else:
+            self.backend = backend or DeterministicExplaboxBackend(
+                predictor=self.predictor,
+                risk_threshold=risk_threshold,
+            )
         self.initialized = False
         self.last_initialize_payload: Optional[JSONDict] = None
 
