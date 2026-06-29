@@ -6,3 +6,4 @@ data/live_case/
 dashboard/node_modules/
 .venv/
 spiderfoot/
+outputs/
