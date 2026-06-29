@@ -1,0 +1,40 @@
+{
+  "target": "company.com",
+  "scan_date": "2026-06-29T00:00:00Z",
+  "entities": [
+    {
+      "type": "domain",
+      "value": "company.com"
+    },
+    {
+      "type": "email",
+      "value": "admin@company.com"
+    },
+    {
+      "type": "email",
+      "value": "security@company.com"
+    },
+    {
+      "type": "organization",
+      "value": "Company Inc"
+    },
+    {
+      "type": "phone",
+      "value": "+1-555-123-4567"
+    },
+    {
+      "type": "technology",
+      "value": "wordpress"
+    },
+    {
+      "type": "certificate",
+      "value": "Let's Encrypt"
+    }
+  ],
+  "events": [
+    {
+      "event_type": "certificate_discovered",
+      "value": "Let's Encrypt"
+    }
+  ]
+}

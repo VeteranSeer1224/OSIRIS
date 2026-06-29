@@ -1,0 +1,20 @@
+{
+  "target": "example.com",
+  "scan_date": "2026-06-29T00:00:00Z",
+  "entities": [
+    {
+      "type": "domain",
+      "value": "example.com"
+    },
+    {
+      "type": "ip",
+      "value": "93.184.216.34"
+    }
+  ],
+  "events": [
+    {
+      "event_type": "dns_record_discovered",
+      "value": "93.184.216.34"
+    }
+  ]
+}

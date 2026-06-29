@@ -143,15 +143,15 @@ def generate_raw_scan(target, spiderfoot_json):
 
     entities, unknown_entities = normalize_entities(raw_data)
 
-    return {
+    from schema_validation import validate_raw_scan
+
+    scan = {
         "target": target,
         "scan_date": datetime.now(
             timezone.utc
         ).strftime("%Y-%m-%dT%H:%M:%SZ"),
-
         "entities": entities,
         "events": extract_events(raw_data),
-
         "raw_module_output": {
             "note": "Untouched SpiderFoot export preserved for audit.",
             "raw_record_count": len(raw_data),
@@ -159,6 +159,10 @@ def generate_raw_scan(target, spiderfoot_json):
             "unknown_entities": unknown_entities
         }
     }
+
+    validate_raw_scan(scan)
+
+    return scan
 
 
 if __name__ == "__main__":
