@@ -4,3 +4,4 @@ pydantic>=2.0.0
 networkx>=3.0
 weasyprint>=61.0
 tldextract>=3.0.0
+openai>=1.0.0
