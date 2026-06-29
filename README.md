@@ -26,11 +26,64 @@
 
 ## 🏃 Running the Pipeline
 
-You can run the full pipeline in one command using `run_pipeline.py`. This script handles ingestion, validation, and Stage 5 reporting (PDF and MISP export).
+The full pipeline runs all five stages in order:
+
+**Sense → Mind → Web → Conscience → Report**
 
 ```bash
-python run_pipeline.py --target example.com --input schemas/samples/sample_raw_scan.json --output-dir outputs/ --export-pdf --export-misp
+python run_pipeline.py \
+  --target example.com \
+  --input samples/spiderfoot_small.json \
+  --output-dir outputs/ \
+  --export-pdf \
+  --export-misp
 ```
+
+By default Stage 2 uses **dry-run** mode (offline stub dossier, no LLM API call). Pass `--mind-live` to invoke a real LLM backend.
+
+Skip graph generation with `--skip-graph` if needed.
+
+### Stage 4 Only (Conscience)
+
+Generate explanation cards and audit reports from an existing dossier:
+
+```bash
+python explanation_card_build.py \
+  --input schemas/samples/sample_dossier.json \
+  --output-dir outputs/
+```
+
+Outputs:
+
+| Artifact | Description |
+| :--- | :--- |
+| `explanation_cards.json` | Per-entity XAI cards (JSON only, no markdown) |
+| `fairness_report.json` / `.md` | Synthetic perturbation fairness audit |
+| `robustness_report.json` / `.md` | Structural perturbation robustness audit |
+
+### Expected Inputs (Stage 4)
+
+- **Primary:** `dossier.json` from OSIRIS-Mind (Contract 2)
+- **Required fields:** `target`, `profile`, `risk_score`, `risk_features`
+- **Optional:** `executive_summary`, `insufficient_data_flags`, `risk_level`
+
+### Backend Selection
+
+Stage 4 auto-selects an explainability backend:
+
+1. **ExplaboxBackend** — used when the `explabox` Python package is installed
+2. **FallbackBackend** — deterministic signed-weight attribution (always available)
+
+Force fallback: `USE_EXPLABOX_BACKEND=0 python explanation_card_build.py ...`
+
+The rest of the pipeline does not depend on which backend is active.
+
+### Limitations
+
+- Fairness testing uses **synthetic perturbation** only (name/region/domain swaps); no protected-class classifiers
+- Robustness testing perturbs dossier structure locally; no adversarial ML attacks
+- Explanations are generated only from dossier fields — no invented rationale
+- Explabox integration is bounded: cohort descriptives when available; per-dossier attribution uses signed weights
 
 ## 🔄 Data Flow & Shared Contracts
 

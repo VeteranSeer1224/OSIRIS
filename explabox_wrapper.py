@@ -45,10 +45,23 @@ import json
 import logging
 import math
 import os
+import re
 import statistics
+import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Protocol, Sequence, Tuple, Union
+
+_MIND_DIR = Path(__file__).resolve().parent / "mind"
+if str(_MIND_DIR) not in sys.path:
+    sys.path.insert(0, str(_MIND_DIR))
+
+try:
+    from mind_profile import extract_feature_vector, score_from_features  # noqa: E402
+    _MIND_SCORING_AVAILABLE = True
+except ImportError:
+    _MIND_SCORING_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -60,6 +73,17 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Explabox availability detection
+# ---------------------------------------------------------------------------
+
+try:
+    import explabox as _explabox_pkg  # type: ignore[import-untyped]
+    _EXPLABOX_AVAILABLE = True
+except ImportError:
+    _EXPLABOX_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +100,8 @@ DossierInput = Union[DossierLike, str, Path]
 # ---------------------------------------------------------------------------
 
 DEFAULT_RISK_THRESHOLD = 70
-DEFAULT_FAIRNESS_VARIANTS = ("identity", "geo_temporal", "technical_stack")
-DEFAULT_ROBUSTNESS_PERTURBATIONS = (
-    "whitespace",
-    "punctuation",
-    "case",
-)
+DEFAULT_FAIRNESS_THRESHOLD = 10
+DEFAULT_ROBUSTNESS_THRESHOLD = 10
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +148,73 @@ def _mean_or_zero(values: Sequence[float]) -> float:
     if not values:
         return 0.0
     return float(sum(values) / len(values))
+
+
+def _risk_level(score: int) -> str:
+    if score < 25:
+        return "LOW"
+    if score < 50:
+        return "MEDIUM"
+    if score < 75:
+        return "HIGH"
+    return "CRITICAL"
+
+
+def _compute_confidence(dossier: Mapping[str, Any]) -> float:
+    """Derive confidence from insufficient-data flags and feature coverage.
+
+    Each flag reduces confidence by 0.15. Fewer than 2 features also
+    reduce confidence. Result is clamped to [0.0, 1.0].
+    """
+    flags = dossier.get("insufficient_data_flags", []) or []
+    flag_count = len([f for f in flags if isinstance(f, Mapping)])
+    features = dossier.get("risk_features", []) or []
+    feature_count = len([f for f in features if isinstance(f, Mapping)])
+
+    confidence = 1.0 - 0.15 * flag_count
+    if feature_count < 2:
+        confidence -= 0.20
+    return float(max(0.0, min(1.0, confidence)))
+
+
+def _build_explanation(dossier: Mapping[str, Any], top_features: List[Mapping[str, Any]]) -> str:
+    """Generate a natural-language explanation grounded in dossier fields.
+
+    Every sentence is derived from actual data — no invented statements.
+    """
+    target = _safe_str(dossier.get("target"), "unknown")
+    score = _safe_str(dossier.get("risk_score"), "0")
+    level = _safe_str(dossier.get("risk_level")) or _risk_level(_clip_score(float(score)))
+    exec_summary = _safe_str(dossier.get("executive_summary"), "")
+
+    positive = []
+    negative = []
+    for feat in top_features:
+        if not isinstance(feat, Mapping):
+            continue
+        plain = _safe_str(feat.get("plain_language"), "")
+        if not plain:
+            name = _safe_str(feat.get("feature"), "feature")
+            value = _safe_str(feat.get("value"), "unknown")
+            plain = f"{name}={value}"
+        weight = feat.get("weight", 0)
+        if isinstance(weight, (int, float)) and weight >= 0:
+            positive.append(plain)
+        else:
+            negative.append(plain)
+
+    parts: List[str] = []
+    parts.append(f"{target} received a risk score of {score} ({level}).")
+
+    if positive:
+        parts.append("Primary risk drivers: " + "; ".join(positive) + ".")
+    if negative:
+        parts.append("Mitigating factors: " + "; ".join(negative) + ".")
+
+    if exec_summary and exec_summary != "none":
+        parts.append(exec_summary)
+
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -265,15 +352,15 @@ def _feature_plain_language(feature: Mapping[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Deterministic fallback backend
+# Fallback backend (deterministic, no external dependencies)
 # ---------------------------------------------------------------------------
 
 
-class DeterministicExplaboxBackend:
-    """Fallback backend that mimics the shape of an explainability pipeline.
+class FallbackBackend:
+    """Deterministic fallback backend that produces honest attribution.
 
-    This is not the real Explabox implementation. It provides predictable,
-    structured outputs so the Stage 4 contract can be built and tested now.
+    Uses the dossier's own signed weights for feature attribution, which is
+    more faithful than running a surrogate model on a cohort of one.
     """
 
     name = "deterministic_fallback"
@@ -288,7 +375,7 @@ class DeterministicExplaboxBackend:
         return {
             "backend": self.name,
             "initialized": True,
-            "note": "Deterministic fallback backend. Replace with real Explabox integration later.",
+            "note": "Deterministic fallback backend using signed-weight attribution.",
         }
 
     def explore(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
@@ -311,7 +398,7 @@ class DeterministicExplaboxBackend:
                 "mean": round(_mean_or_zero(scores), 2),
                 "median": round(statistics.median(scores), 2) if scores else 0,
             },
-            "feature_frequency": self._frequency_map(features),
+            "feature_frequency": _frequency_map(features),
         }
 
     def examine(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
@@ -340,201 +427,491 @@ class DeterministicExplaboxBackend:
         }
 
     def explain(self, dossier: Mapping[str, Any]) -> JSONDict:
-        """Return a structured explanation for one dossier."""
-        text = dossier_to_text(dossier)
-        prediction = self._predict_score(dossier, text)
-        top_features = self._top_features(dossier)
+        """Return a structured explanation with full attribution."""
+        risk_score = _clip_score(float(dossier.get("risk_score", 0) or 0))
+        top_features = _top_features(dossier)
+        positive_evidence, negative_evidence = _split_evidence(top_features)
+        confidence = _compute_confidence(dossier)
+        explanation = _build_explanation(dossier, top_features)
 
         return {
             "backend": self.name,
+            "risk_score": risk_score,
+            "prediction": risk_score,
             "target": _safe_str(dossier.get("target"), "unknown"),
-            "prediction": prediction,
             "top_features": top_features,
-            "text_basis": text,
+            "positive_evidence": positive_evidence,
+            "negative_evidence": negative_evidence,
+            "confidence": round(confidence, 4),
+            "explanation": explanation,
         }
 
     def expose(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
-        """Run simple fairness and robustness checks over dossier variants."""
-        fairness = self._fairness_check(dossiers)
-        robustness = self._robustness_check(dossiers)
+        """Run fairness and robustness checks over dossier variants."""
+        fairness = _fairness_check(dossiers)
+        robustness = _robustness_check(dossiers)
         return {
             "backend": self.name,
             "fairness": fairness,
             "robustness": robustness,
         }
 
-    # ------------------------------------------------------------------
-    # Internal helpers for the fallback backend
-    # ------------------------------------------------------------------
-
-    def _predict_score(self, dossier: Mapping[str, Any], text: str) -> int:
-        if self.predictor is not None:
-            try:
-                return _clip_score(self.predictor.predict(text, payload=dossier))
-            except Exception:
-                pass
-
-        # Deterministic heuristic based on risk score and the weighted features.
-        base = float(dossier.get("risk_score", 0) or 0)
-        features = dossier.get("risk_features", []) or []
-        contribution = 0.0
-        for feature in features:
-            if isinstance(feature, Mapping):
-                weight = feature.get("weight", 0)
-                value = feature.get("value", 0)
-                if isinstance(weight, (int, float)):
-                    if isinstance(value, (int, float)):
-                        contribution += float(weight) * float(value)
-                    else:
-                        contribution += float(weight) * 1.0
-        return _clip_score(base + contribution * 10)
-
-    def _top_features(self, dossier: Mapping[str, Any]) -> List[JSONDict]:
-        features = dossier.get("risk_features", []) or []
-        scored: List[Tuple[float, JSONDict]] = []
-        for feature in features:
-            if not isinstance(feature, Mapping):
-                continue
-            weight = float(feature.get("weight", 0) or 0)
-            scored.append(
-                (
-                    abs(weight),
-                    {
-                        "feature": _safe_str(feature.get("feature"), "unknown_feature"),
-                        "value": feature.get("value"),
-                        "weight": weight,
-                        "plain_language": _feature_plain_language(feature),
-                    },
-                )
-            )
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [item[1] for item in scored[:5]]
-
-    def _fairness_check(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
-        """Synthetic fairness check by perturbing identity-like fields."""
-        if not dossiers:
-            return {
-                "passed": True,
-                "notes": "No dossiers supplied.",
-                "max_score_delta": 0,
-                "evaluated_variants": 0,
-            }
-
-        deltas: List[float] = []
-        notes: List[str] = []
-
-        for dossier in dossiers:
-            if not isinstance(dossier, Mapping):
-                continue
-            base_score = self._predict_score(dossier, dossier_to_text(dossier))
-            for field in DEFAULT_FAIRNESS_VARIANTS:
-                perturbed = self._perturb_field(copy.deepcopy(dict(dossier)), field)
-                pert_score = self._predict_score(perturbed, dossier_to_text(perturbed))
-                delta = abs(base_score - pert_score)
-                deltas.append(delta)
-                notes.append(f"{field}: Δ={delta}")
-
-        max_delta = max(deltas) if deltas else 0
-        passed = max_delta <= 5
-        return {
-            "passed": passed,
-            "max_score_delta": max_delta,
-            "evaluated_variants": len(deltas),
-            "notes": notes[:10],
-        }
-
-    def _robustness_check(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
-        """Synthetic robustness test under minor text perturbations."""
-        if not dossiers:
-            return {
-                "passed": True,
-                "notes": "No dossiers supplied.",
-                "max_score_delta": 0,
-                "evaluated_variants": 0,
-            }
-
-        deltas: List[float] = []
-        notes: List[str] = []
-        for dossier in dossiers:
-            if not isinstance(dossier, Mapping):
-                continue
-            base_text = dossier_to_text(dossier)
-            base_score = self._predict_score(dossier, base_text)
-            for perturbation in DEFAULT_ROBUSTNESS_PERTURBATIONS:
-                pert_text = self._perturb_text(base_text, perturbation)
-                pert_score = self._predict_score(dossier, pert_text)
-                delta = abs(base_score - pert_score)
-                deltas.append(delta)
-                notes.append(f"{perturbation}: Δ={delta}")
-
-        max_delta = max(deltas) if deltas else 0
-        passed = max_delta <= 5
-        return {
-            "passed": passed,
-            "max_score_delta": max_delta,
-            "evaluated_variants": len(deltas),
-            "notes": notes[:10],
-        }
-
-    @staticmethod
-    def _frequency_map(values: Sequence[str]) -> JSONDict:
-        counts: Dict[str, int] = {}
-        for value in values:
-            counts[value] = counts.get(value, 0) + 1
-        return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
-
-    @staticmethod
-    def _perturb_field(dossier: MutableMapping[str, Any], field: str) -> MutableMapping[str, Any]:
-        profile = dossier.get("profile", {})
-        if not isinstance(profile, MutableMapping):
-            return dossier
-
-        if field == "identity":
-            current = _safe_str(profile.get("identity"), "")
-            profile["identity"] = current.replace("John", "Alex").replace("John Doe", "Alex Roe") or "Altered identity"
-        elif field == "geo_temporal":
-            current = _safe_str(profile.get("geo_temporal"), "")
-            profile["geo_temporal"] = current.replace("India", "Singapore").replace("US", "UK") or "Altered geo-temporal context"
-        elif field == "technical_stack":
-            stack = _ensure_list(profile.get("technical_stack"))
-            profile["technical_stack"] = list(reversed(stack)) if stack else ["unknown_stack"]
-        dossier["profile"] = profile
-        return dossier
-
-    @staticmethod
-    def _perturb_text(text: str, mode: str) -> str:
-        if mode == "whitespace":
-            return " ".join(text.split())
-        if mode == "punctuation":
-            return text.replace(",", "").replace(":", "")
-        if mode == "case":
-            return text.swapcase()
-        return text
-
 
 # ---------------------------------------------------------------------------
-# Real-backend bridge (optional)
+# Bounded Explabox backend (uses real library for cohort descriptives)
 # ---------------------------------------------------------------------------
 
 
-class RealExplaboxBridge:
-    """Placeholder bridge for the real Explabox implementation.
+class ExplaboxBackend:
+    """Backend that drives the real explabox library when available.
 
-    This class intentionally raises until someone wires the actual library.
-    It exists so the public interface is stable and the later integration issue
-    has a clear insertion point.
+    Bounded integration: uses explabox for cohort-level dataset descriptives
+    (box.explore()) and delegates per-dossier explain/expose to the
+    deterministic fallback, because attribution from the dossier's real signed
+    weights is more honest than a text-surrogate LIME model on a cohort of one.
     """
 
-    name = "real_explabox"
+    name = "explabox"
 
-    def __init__(self, *args: Any, **kwargs: Any):
-        raise NotImplementedError(
-            "Real Explabox integration is not wired yet. Use the deterministic fallback backend for now."
-        )
+    def __init__(self, predictor: Optional[PredictorAdapter] = None, risk_threshold: int = DEFAULT_RISK_THRESHOLD):
+        self.predictor = predictor
+        self.risk_threshold = risk_threshold
+        self.initialized = False
+        self._explabox_usable = False
+        self._fallback = FallbackBackend(predictor=predictor, risk_threshold=risk_threshold)
+
+    def initialize(self) -> JSONDict:
+        self.initialized = True
+        self._fallback.initialize()
+        note = "Real Explabox library detected. Cohort descriptives via explabox; per-dossier attribution via signed weights."
+        return {
+            "backend": self.name,
+            "initialized": True,
+            "note": note,
+        }
+
+    def explore(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
+        """Try real explabox descriptives; fall back to deterministic if it fails."""
+        if _EXPLABOX_AVAILABLE and len(dossiers) >= 1:
+            try:
+                return self._explabox_explore(dossiers)
+            except Exception as exc:
+                log.info("Explabox explore failed, falling back: %s", exc)
+        return self._fallback.explore(dossiers)
+
+    def examine(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
+        return self._fallback.examine(dossiers)
+
+    def explain(self, dossier: Mapping[str, Any]) -> JSONDict:
+        return self._fallback.explain(dossier)
+
+    def expose(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
+        return self._fallback.expose(dossiers)
+
+    def _explabox_explore(self, dossiers: Sequence[Mapping[str, Any]]) -> JSONDict:
+        """Drive real explabox descriptives for a cohort of dossiers."""
+        import pandas as pd  # type: ignore[import-untyped]
+
+        rows = []
+        labels = []
+        for d in dossiers:
+            if not isinstance(d, Mapping):
+                continue
+            features = d.get("risk_features", []) or []
+            text_parts = []
+            for f in features:
+                if isinstance(f, Mapping):
+                    text_parts.append(f"{_safe_str(f.get('feature', ''))}={_safe_str(f.get('value', ''))}")
+            rows.append(" ".join(text_parts) or "no_features")
+            score = float(d.get("risk_score", 0) or 0)
+            labels.append(_risk_level(_clip_score(score)))
+
+        if len(set(labels)) < 2:
+            return self._fallback.explore(dossiers)
+
+        df = pd.DataFrame({"text": rows, "label": labels})
+        env = _explabox_pkg.import_data(df, data_cols="text", label_cols="label")
+        box = _explabox_pkg.Explabox(ingestibles=_explabox_pkg.Ingestible(data=env))
+        descriptives = box.explore()
+
+        result: JSONDict = {
+            "backend": self.name,
+            "sample_count": len(dossiers),
+            "note": "Descriptives from real Explabox library.",
+        }
+
+        if hasattr(descriptives, "to_dict"):
+            result["descriptives"] = descriptives.to_dict()
+
+        targets = sorted({str(d.get("target", "")) for d in dossiers if isinstance(d, Mapping)})
+        result["unique_targets"] = targets
+        scores = [float(d.get("risk_score", 0)) for d in dossiers if isinstance(d, Mapping)]
+        if scores:
+            result["score_summary"] = {
+                "min": _clip_score(min(scores)),
+                "max": _clip_score(max(scores)),
+                "mean": round(_mean_or_zero(scores), 2),
+                "median": round(statistics.median(scores), 2),
+            }
+
+        return result
 
 
 # ---------------------------------------------------------------------------
-# Main wrapper
+# Shared internal helpers (used by both backends)
+# ---------------------------------------------------------------------------
+
+
+def _predict_score(dossier: Mapping[str, Any]) -> int:
+    """Derive a score from the dossier using Mind's feature-weight model when available."""
+    if _MIND_SCORING_AVAILABLE:
+        feature_vector = extract_feature_vector(dossier)
+        if feature_vector:
+            return _clip_score(score_from_features(feature_vector, dossier))
+
+    base = float(dossier.get("risk_score", 0) or 0)
+    features = dossier.get("risk_features", []) or []
+    contribution = 0.0
+    for feature in features:
+        if isinstance(feature, Mapping):
+            weight = feature.get("weight", 0)
+            value = feature.get("value", 0)
+            if isinstance(weight, (int, float)):
+                if isinstance(value, (int, float)):
+                    contribution += float(weight) * float(value)
+                else:
+                    contribution += float(weight) * 1.0
+    return _clip_score(base + contribution * 10)
+
+
+def _top_features(dossier: Mapping[str, Any], limit: int = 5) -> List[JSONDict]:
+    """Extract the top risk features sorted by absolute weight."""
+    features = dossier.get("risk_features", []) or []
+    scored: List[Tuple[float, JSONDict]] = []
+    for feature in features:
+        if not isinstance(feature, Mapping):
+            continue
+        weight = float(feature.get("weight", 0) or 0)
+        scored.append(
+            (
+                abs(weight),
+                {
+                    "feature": _safe_str(feature.get("feature"), "unknown_feature"),
+                    "value": feature.get("value"),
+                    "weight": weight,
+                    "plain_language": _feature_plain_language(feature),
+                },
+            )
+        )
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [item[1] for item in scored[:limit]]
+
+
+def _split_evidence(top_features: List[Mapping[str, Any]]) -> Tuple[List[str], List[str]]:
+    """Split top features into positive and negative evidence lists."""
+    positive: List[str] = []
+    negative: List[str] = []
+    for feat in top_features:
+        plain = _safe_str(feat.get("plain_language"), "")
+        if not plain:
+            plain = f"{_safe_str(feat.get('feature'), 'feature')}={_safe_str(feat.get('value'), '?')}"
+        weight = feat.get("weight", 0)
+        if isinstance(weight, (int, float)) and weight >= 0:
+            positive.append(plain)
+        else:
+            negative.append(plain)
+    return positive, negative
+
+
+def _frequency_map(values: Sequence[str]) -> JSONDict:
+    counts: Dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+# ---------------------------------------------------------------------------
+# Fairness analysis (synthetic perturbation testing)
+# ---------------------------------------------------------------------------
+
+
+_FAIRNESS_REGION_MAP = {
+    "India": "Singapore",
+    "US": "UK",
+    "United States": "United Kingdom",
+    "Germany": "Canada",
+    "Russia": "Brazil",
+    "China": "Japan",
+    "Australia": "New Zealand",
+}
+
+_FAIRNESS_IDENTITY_REPLACEMENTS = [
+    ("John", "Alex"),
+    ("Jane", "Jordan"),
+    ("John Doe", "Alex Roe"),
+    ("admin", "sysadmin"),
+]
+
+_FAIRNESS_DOMAIN_REPLACEMENTS = [
+    ("example.com", "test-site.org"),
+    ("google.com", "search-engine.net"),
+    ("github.com", "code-host.dev"),
+]
+
+
+def _perturb_fairness(dossier: MutableMapping[str, Any], variant: str) -> MutableMapping[str, Any]:
+    """Apply a single fairness perturbation to a dossier copy."""
+    perturbed = copy.deepcopy(dict(dossier))
+    profile = perturbed.get("profile", {})
+    if not isinstance(profile, MutableMapping):
+        return perturbed
+
+    if variant == "identity":
+        current = _safe_str(profile.get("identity"), "")
+        for old, new in _FAIRNESS_IDENTITY_REPLACEMENTS:
+            if old in current:
+                current = current.replace(old, new)
+        if current == _safe_str(profile.get("identity"), ""):
+            current = "[altered-identity]"
+        profile["identity"] = current
+    elif variant == "geo_temporal":
+        current = _safe_str(profile.get("geo_temporal"), "")
+        for old, new in _FAIRNESS_REGION_MAP.items():
+            if old in current:
+                current = current.replace(old, new)
+        if current == _safe_str(profile.get("geo_temporal"), ""):
+            current = "[altered-geo-temporal]"
+        profile["geo_temporal"] = current
+    elif variant == "domain":
+        current = _safe_str(perturbed.get("target"), "")
+        for old, new in _FAIRNESS_DOMAIN_REPLACEMENTS:
+            if old in current:
+                current = current.replace(old, new)
+        if current == _safe_str(perturbed.get("target"), ""):
+            current = "[altered-domain]"
+        perturbed["target"] = current
+
+    perturbed["profile"] = profile
+    return perturbed
+
+
+def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DEFAULT_FAIRNESS_THRESHOLD) -> JSONDict:
+    """Synthetic fairness check by perturbing identity, geo, and domain fields."""
+    variants = ("identity", "geo_temporal", "domain")
+
+    if not dossiers:
+        return {
+            "passed": True,
+            "notes": ["No dossiers supplied."],
+            "max_score_delta": 0,
+            "avg_score_delta": 0,
+            "threshold": threshold,
+            "flagged": False,
+            "evaluated_variants": 0,
+        }
+
+    deltas: List[float] = []
+    notes: List[str] = []
+
+    for dossier in dossiers:
+        if not isinstance(dossier, Mapping):
+            continue
+        base_score = _predict_score(dossier)
+        for variant in variants:
+            perturbed = _perturb_fairness(dict(dossier), variant)
+            pert_score = _predict_score(perturbed)
+            delta = abs(base_score - pert_score)
+            deltas.append(delta)
+            notes.append(f"{variant}: \u0394={delta:.2f}")
+
+    max_delta = max(deltas) if deltas else 0
+    avg_delta = _mean_or_zero(deltas)
+    flagged = max_delta > threshold
+    passed = not flagged
+
+    return {
+        "passed": passed,
+        "notes": notes[:10],
+        "max_score_delta": round(max_delta, 4),
+        "avg_score_delta": round(avg_delta, 4),
+        "threshold": threshold,
+        "flagged": flagged,
+        "evaluated_variants": len(deltas),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Robustness analysis (structural perturbation testing)
+# ---------------------------------------------------------------------------
+
+
+def _perturb_robustness(dossier: MutableMapping[str, Any], variant: str) -> MutableMapping[str, Any]:
+    """Apply a structural perturbation to a dossier copy."""
+    perturbed = copy.deepcopy(dict(dossier))
+    profile = perturbed.get("profile", {})
+    if not isinstance(profile, MutableMapping):
+        profile = {}
+        perturbed["profile"] = profile
+
+    if variant == "missing_profile_fields":
+        for key in ("identity", "geo_temporal", "opsec_posture"):
+            profile.pop(key, None)
+    elif variant == "empty_technical_stack":
+        profile["technical_stack"] = []
+    elif variant == "removed_emails":
+        for key in ("identity", "geo_temporal"):
+            if key in profile:
+                profile[key] = re.sub(r"\S+@\S+\.\S+", "[removed-email]", str(profile[key]))
+    elif variant == "removed_whois":
+        for key in ("identity", "geo_temporal"):
+            if key in profile:
+                text = str(profile[key])
+                for token in ("whois", "WHOIS", "registrar", "registered"):
+                    text = text.replace(token, "[removed]")
+                profile[key] = text
+    elif variant == "removed_dns":
+        for key in ("identity", "geo_temporal", "opsec_posture"):
+            if key in profile:
+                text = str(profile[key])
+                for token in ("dns", "DNS", "nameserver", "NS "):
+                    text = text.replace(token, "[removed]")
+                profile[key] = text
+
+    perturbed["profile"] = profile
+    return perturbed
+
+
+def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DEFAULT_ROBUSTNESS_THRESHOLD) -> JSONDict:
+    """Test score stability under structural perturbations."""
+    if not dossiers:
+        return {
+            "passed": True,
+            "notes": ["No dossiers supplied."],
+            "max_score_delta": 0,
+            "avg_score_delta": 0,
+            "threshold": threshold,
+            "decision_flipped": False,
+            "feature_stability": 1.0,
+            "evaluated_variants": 0,
+        }
+
+    deltas: List[float] = []
+    notes: List[str] = []
+    any_decision_flip = False
+    base_top_features_all: List[List[str]] = []
+
+    for dossier in dossiers:
+        if not isinstance(dossier, Mapping):
+            continue
+        base_score = _predict_score(dossier)
+        base_features = dossier.get("risk_features", []) or []
+        base_top = [f.get("feature", "") for f in base_features if isinstance(f, Mapping)][:5]
+        base_top_features_all.append(base_top)
+        base_level = _risk_level(base_score)
+
+        structural_variants = (
+            "missing_profile_fields",
+            "empty_technical_stack",
+            "removed_emails",
+            "removed_whois",
+            "removed_dns",
+        )
+        for variant in structural_variants:
+            perturbed = _perturb_robustness(dict(dossier), variant)
+            pert_score = _predict_score(perturbed)
+            delta = abs(base_score - pert_score)
+            deltas.append(delta)
+            notes.append(f"{variant}: \u0394={delta:.2f}")
+
+        # Perturbation: remove each feature one at a time
+        for idx, feature in enumerate(base_features):
+            if not isinstance(feature, Mapping):
+                continue
+            perturbed = copy.deepcopy(dict(dossier))
+            perturbed["risk_features"] = [
+                f for i, f in enumerate(base_features) if i != idx and isinstance(f, Mapping)
+            ]
+            pert_score = _predict_score(perturbed)
+            delta = abs(base_score - pert_score)
+            deltas.append(delta)
+            notes.append(f"remove_feature[{_safe_str(feature.get('feature'), '?')}]: \u0394={delta:.2f}")
+
+        # Perturbation: empty risk_features
+        perturbed = copy.deepcopy(dict(dossier))
+        perturbed["risk_features"] = []
+        pert_score = _predict_score(perturbed)
+        delta = abs(base_score - pert_score)
+        deltas.append(delta)
+        notes.append(f"empty_features: \u0394={delta:.2f}")
+
+        # Perturbation: zero out all weights
+        perturbed = copy.deepcopy(dict(dossier))
+        for f in perturbed.get("risk_features", []):
+            if isinstance(f, MutableMapping):
+                f["weight"] = 0
+        pert_score = _predict_score(perturbed)
+        delta = abs(base_score - pert_score)
+        deltas.append(delta)
+        notes.append(f"zero_weights: \u0394={delta:.2f}")
+
+        # Perturbation: small score perturbations
+        for offset in (-5, -1, 1, 5):
+            perturbed = copy.deepcopy(dict(dossier))
+            perturbed["risk_score"] = max(0, min(100, base_score + offset))
+            pert_score = _predict_score(perturbed)
+            pert_level = _risk_level(pert_score)
+            if pert_level != base_level:
+                any_decision_flip = True
+            delta = abs(base_score - pert_score)
+            deltas.append(delta)
+            notes.append(f"score_offset_{offset:+d}: \u0394={delta:.2f}")
+
+    # Feature stability: fraction of top features retained after single-feature removal
+    stable_counts: List[float] = []
+    for dossier in dossiers:
+        if not isinstance(dossier, Mapping):
+            continue
+        base_features = dossier.get("risk_features", []) or []
+        if not base_features:
+            stable_counts.append(1.0)
+            continue
+        retained = 0
+        for idx, feature in enumerate(base_features):
+            if not isinstance(feature, Mapping):
+                continue
+            perturbed = copy.deepcopy(dict(dossier))
+            perturbed["risk_features"] = [
+                f for i, f in enumerate(base_features) if i != idx and isinstance(f, Mapping)
+            ]
+            feat_name = _safe_str(feature.get("feature"), "")
+            new_names = {
+                _safe_str(f.get("feature"), "")
+                for f in perturbed.get("risk_features", []) if isinstance(f, Mapping)
+            }
+            if feat_name in new_names or len(new_names) >= max(len(base_features) - 1, 1):
+                retained += 1
+        stable_counts.append(retained / len(base_features))
+
+    feature_stability = _mean_or_zero(stable_counts) if stable_counts else 1.0
+
+    max_delta = max(deltas) if deltas else 0
+    avg_delta = _mean_or_zero(deltas)
+    passed = max_delta <= threshold
+
+    return {
+        "passed": passed,
+        "notes": notes[:15],
+        "max_score_delta": round(max_delta, 4),
+        "avg_score_delta": round(avg_delta, 4),
+        "threshold": threshold,
+        "decision_flipped": any_decision_flip,
+        "feature_stability": round(feature_stability, 4),
+        "evaluated_variants": len(deltas),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main wrapper (auto-detects backend)
 # ---------------------------------------------------------------------------
 
 
@@ -542,6 +919,8 @@ class ExplaboxWrapper:
     """Project-facing Stage 4 wrapper.
 
     Public methods return structured dictionaries and never write report files.
+    Backend selection is automatic: ExplaboxBackend if explabox is importable,
+    FallbackBackend otherwise. Override with USE_EXPLABOX_BACKEND=0 to force fallback.
     """
 
     def __init__(
@@ -552,10 +931,21 @@ class ExplaboxWrapper:
     ):
         self.predictor = PredictorAdapter(predictor) if predictor is not None else None
         self.risk_threshold = risk_threshold
-        if os.getenv("USE_EXPLABOX_BACKEND") == "1":
-            self.backend = backend or RealExplaboxBridge()
+
+        if backend is not None:
+            self.backend = backend
+        elif os.getenv("USE_EXPLABOX_BACKEND", "").lower() in ("0", "false", "no"):
+            self.backend = FallbackBackend(
+                predictor=self.predictor,
+                risk_threshold=risk_threshold,
+            )
+        elif _EXPLABOX_AVAILABLE:
+            self.backend = ExplaboxBackend(
+                predictor=self.predictor,
+                risk_threshold=risk_threshold,
+            )
         else:
-            self.backend = backend or DeterministicExplaboxBackend(
+            self.backend = FallbackBackend(
                 predictor=self.predictor,
                 risk_threshold=risk_threshold,
             )

@@ -80,8 +80,60 @@ REPORT_SCHEMA = {
         },
         "events": {
             "type": "array"
+        },
+        "dossier_summary": {
+            "type": "object"
+        },
+        "xai_audit": {
+            "type": "object"
         }
     }
+}
+
+
+EXPLANATION_CARDS_SCHEMA = {
+    "type": "object",
+    "required": ["schema_version", "generated_at", "card_count", "cards"],
+    "properties": {
+        "schema_version": {"type": "string"},
+        "generated_at": {"type": "string"},
+        "target": {"type": "string"},
+        "targets": {"type": "array"},
+        "card_count": {"type": "integer", "minimum": 1},
+        "cards": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": [
+                    "entity_id",
+                    "entity",
+                    "timestamp",
+                    "risk_score",
+                    "top_features",
+                    "supporting_evidence",
+                    "contradicting_evidence",
+                    "explanation",
+                    "confidence",
+                    "fairness_check",
+                    "robustness_check",
+                ],
+                "properties": {
+                    "entity_id": {"type": "string"},
+                    "entity": {"type": "string"},
+                    "timestamp": {"type": "string"},
+                    "risk_score": {"type": "integer"},
+                    "top_features": {"type": "array"},
+                    "supporting_evidence": {"type": "array"},
+                    "contradicting_evidence": {"type": "array"},
+                    "explanation": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "fairness_check": {"type": "object"},
+                    "robustness_check": {"type": "object"},
+                },
+            },
+        },
+    },
 }
 
 
@@ -108,4 +160,17 @@ def validate_report(report):
     except ValidationError as e:
         raise ValueError(
             f"Report schema error: {e.message}"
+        )
+
+
+def validate_explanation_cards(cards):
+    try:
+        validate(
+            instance=cards,
+            schema=EXPLANATION_CARDS_SCHEMA
+        )
+        return True
+    except ValidationError as e:
+        raise ValueError(
+            f"Explanation cards schema error: {e.message}"
         )
