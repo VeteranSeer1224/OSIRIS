@@ -9,7 +9,9 @@ def test_raw_scan_schema():
     scan = {
         "target": "example.com",
         "scan_date": "2026-06-29",
-        "entities": [],
+        "entities": [
+            {"type": "domain", "value": "example.com"}
+        ],
         "events": []
     }
 

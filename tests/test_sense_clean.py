@@ -7,6 +7,11 @@ def test_unknown_entities_preserved():
             "type": "CUSTOM_ENTITY",
             "data": "abc123",
             "module": "sfp_custom"
+        },
+        {
+            "type": "DOMAIN_NAME",
+            "data": "example.com",
+            "module": "sfp_dns"
         }
     ]
 

@@ -242,7 +242,7 @@ class OpenAIBackend(LLMBackend):
             from openai import OpenAI
         except ImportError as exc:
             raise ImportError(
-                "DeepSeek backend requires the OpenAI SDK.\n"
+                "OpenAI backend requires the OpenAI SDK.\n"
                 "Install with:\n"
                 "pip install openai"
             ) from exc
@@ -250,7 +250,7 @@ class OpenAIBackend(LLMBackend):
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise EnvironmentError("OPENAI_API_KEY not set")
-        self.client = _openai_sdk.OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key)
         self.model = model or self.DEFAULT_MODEL
 
     def call(self, system_prompt: str, user_message: str) -> str:
