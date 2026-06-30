@@ -46,6 +46,8 @@ class EventType(str, Enum):
 class RawEntity(BaseModel):
     type: EntityType
     value: str
+    source_module: Optional[str] = None     # e.g. "sfp_dns"
+    source: Optional[str] = None            # e.g. "SpiderFoot"
     platform: Optional[str] = None          # e.g. "github" for social_profile
     metadata: Optional[Dict[str, Any]] = None
 
@@ -127,6 +129,8 @@ class Dossier(BaseModel):
     profile: DimensionProfile
     risk_score: int = Field(..., ge=0, le=100)
     risk_level: str | None = None                      # "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+    injection_detected: bool = False
+    injection_details: Optional[str] = None
     risk_features: List[RiskFeature]
     insufficient_data_flags: List[InsufficientDataFlag] = Field(default_factory=list)
     executive_summary: str                  # 2-3 sentence plain-language summary for Person A

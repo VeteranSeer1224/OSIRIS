@@ -58,3 +58,23 @@ def test_explanation_cards_schema():
     }
 
     assert validate_explanation_cards(cards)
+
+
+def test_dossier_schema():
+    from schema_validation import validate_dossier
+    dossier = {
+        "target": "example.com",
+        "scan_date": "2026-06-30T00:00:00Z",
+        "profiled_at": "2026-06-30T00:01:00Z",
+        "risk_score": 50,
+        "risk_level": "MEDIUM",
+        "injection_detected": False,
+        "injection_details": None,
+        "profile": {},
+        "risk_features": [],
+        "insufficient_data_flags": [],
+        "executive_summary": "Summary.",
+        "model_metadata": {},
+        "schema_version": "1.0"
+    }
+    assert validate_dossier(dossier)

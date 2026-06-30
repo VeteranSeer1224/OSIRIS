@@ -86,6 +86,8 @@ def normalize_entities(raw_data):
         entities.append({
             "type": osiris_type,
             "value": sf_value,
+            "source_module": item.get("module"),
+            "source": item.get("source"),
             "platform": None,
             "metadata": {
                 "source_module": item.get("module"),

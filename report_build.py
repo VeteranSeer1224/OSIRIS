@@ -150,6 +150,12 @@ def build_report(scan, dossier=None, explanation_cards=None):
     if xai_audit is not None:
         report["xai_audit"] = xai_audit
 
+    disclaimer_path = Path(__file__).resolve().parent / "DISCLAIMER.md"
+    if disclaimer_path.exists():
+        report["disclaimer_appendix"] = disclaimer_path.read_text(encoding="utf-8")
+    else:
+        report["disclaimer_appendix"] = None
+
     validate_report(report)
 
     return report
@@ -267,6 +273,12 @@ def export_pdf(report, output_path):
             html_content += f"<li>{item.get('type')}: {item.get('value')}</li>"
         html_content += "</ul>"
     
+    if report.get("disclaimer_appendix"):
+        import html
+        escaped_disclaimer = html.escape(report["disclaimer_appendix"])
+        html_content += "<h2>Appendix: Stage 0 Ethical Scope & Disclaimer</h2>"
+        html_content += f"<pre style='white-space: pre-wrap; background: #f1f5f9; padding: 12px; border-radius: 6px;'>{escaped_disclaimer}</pre>"
+
     html_content += "</body></html>"
     
     try:
