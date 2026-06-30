@@ -104,11 +104,25 @@ def _check_for_injection(raw_json_str: str) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+def _scrub_obj(obj: Any) -> Any:
+    """Recursively scrub injection patterns from dicts, lists, and strings."""
+    if isinstance(obj, str):
+        injected, _ = _check_for_injection(obj)
+        if injected:
+            return "[REDACTED-INJECTION]"
+        return obj
+    elif isinstance(obj, dict):
+        return {k: _scrub_obj(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return type(obj)(_scrub_obj(item) for item in obj)
+    return obj
+
+
 def sanitise_input(scan: Dict[str, Any]) -> tuple[Dict[str, Any], bool, Optional[str]]:
     """
     Check the raw scan dict for injection. Returns:
       (cleaned_scan, injection_detected, injection_detail)
-    Cleaning: replace string-value entity fields with [REDACTED] if flagged.
+    Cleaning: recursively replace string values with [REDACTED-INJECTION] if flagged.
     """
     scan_str = json.dumps(scan)
     injected, detail = _check_for_injection(scan_str)
@@ -116,18 +130,7 @@ def sanitise_input(scan: Dict[str, Any]) -> tuple[Dict[str, Any], bool, Optional
     if not injected:
         return scan, False, None
 
-    # Scrub potentially hostile string values from entity list
-    clean_entities = []
-    for entity in scan.get("entities", []):
-        clean = dict(entity)
-        if isinstance(clean.get("value"), str):
-            val_injected, _ = _check_for_injection(clean["value"])
-            if val_injected:
-                clean["value"] = "[REDACTED-INJECTION]"
-        clean_entities.append(clean)
-
-    clean_scan = dict(scan)
-    clean_scan["entities"] = clean_entities
+    clean_scan = _scrub_obj(scan)
     return clean_scan, True, detail
 
 

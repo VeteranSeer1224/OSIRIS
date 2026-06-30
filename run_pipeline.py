@@ -25,7 +25,7 @@ class PipelineError(Exception):
 
 
 def ensure_dir(path):
-    path = Path(path)
+    path = Path(path).resolve()
     path.mkdir(parents=True, exist_ok=True)
     return path
 

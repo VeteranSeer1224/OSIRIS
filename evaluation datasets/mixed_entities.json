@@ -33,8 +33,9 @@
   ],
   "events": [
     {
-      "event_type": "certificate_discovered",
-      "value": "Let's Encrypt"
+      "date": "2026-06-29T00:00:00Z",
+      "type": "certificate_discovered",
+      "entity": "Let's Encrypt"
     }
   ]
 }

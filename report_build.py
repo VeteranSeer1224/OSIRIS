@@ -218,9 +218,12 @@ def export_misp(report, output_path):
     # Map findings to MISP attributes
     for finding in report.get("findings", []):
         for item in finding.get("items", []):
+            val_str = str(item.get("value", ""))
+            if "[REDACTED-INJECTION]" in val_str:
+                continue
             attr = {
                 "type": "other",
-                "value": str(item.get("value", "")),
+                "value": val_str,
                 "comment": f"Source: {item.get('source', 'unknown')}"
             }
             if item.get("type") == "ip":

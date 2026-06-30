@@ -13,8 +13,9 @@
   ],
   "events": [
     {
-      "event_type": "dns_record_discovered",
-      "value": "93.184.216.34"
+      "date": "2026-06-29T00:00:00Z",
+      "type": "dns_record_discovered",
+      "entity": "93.184.216.34"
     }
   ]
 }
