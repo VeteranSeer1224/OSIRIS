@@ -1,42 +1,68 @@
 #!/bin/bash
 # OSIRIS Stage 0: Foundation Environment Setup
+#
+# This script installs all system and Python dependencies needed to run
+# the full OSIRIS pipeline from a fresh clone.
+#
+# Usage:
+#   chmod +x setup.sh
+#   ./setup.sh
 
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-echo "Installing system dependencies (WeasyPrint, zstd, and Python tooling)..."
+echo "=========================================="
+echo "  OSIRIS — Environment Setup"
+echo "=========================================="
+
+# ── 1. System dependencies (WeasyPrint, zstd, Python tooling) ────────────
+echo ""
+echo "[1/5] Installing system dependencies..."
 sudo apt update
 sudo apt install -y libpango-1.0-0 libpangocairo-1.0-0 zstd python3-pip python3-venv
 
-echo "Setting up Python Virtual Environment..."
-# Creating the venv in .venv
-python3 -m venv .venv
+# ── 2. Python virtual environment ────────────────────────────────────────
+echo ""
+echo "[2/5] Setting up Python virtual environment..."
+if [ ! -d "venv" ]; then
+    python3 -m venv venv
+fi
+source venv/bin/activate
 
-# FIX: Activating from .venv/bin/activate (added the missing dot)
-source .venv/bin/activate
-
-echo "Upgrading pip inside the virtual environment..."
+echo ""
+echo "[3/5] Upgrading pip..."
 pip install --upgrade pip
 
-echo "Installing OSIRIS-Sense dependencies (Person A)..."
-# Avoid crashing if the directory already exists
+# ── 3. Python dependencies (pinned in requirements.txt) ──────────────────
+echo ""
+echo "[4/5] Installing Python dependencies from requirements.txt..."
+pip install -r requirements.txt
+
+# ── 4. SpiderFoot (Stage 1 — optional, for live scans) ───────────────────
+echo ""
+echo "[5/5] Setting up SpiderFoot..."
 if [ ! -d "spiderfoot" ]; then
     git clone https://github.com/smicallef/spiderfoot.git
 fi
 pip install -r spiderfoot/requirements.txt
 
-echo "Installing OSIRIS-Mind dependencies (Person B)..."
-# openai SDK covers both DeepSeek and OpenAI backends; pydantic for schema validation
-pip install openai pydantic pytest
-# Fix click/httpx version conflict (httpx can pull in an incompatible click version)
-pip install --upgrade click httpx
-curl -fsSL https://ollama.com/install.sh | sh
+# ── 5. Ollama (Stage 2 — local LLM, optional) ───────────────────────────
+echo ""
+echo "Installing Ollama for local LLM inference (Stage 2)..."
+if ! command -v ollama &> /dev/null; then
+    curl -fsSL https://ollama.com/install.sh | sh
+fi
+echo "To pull a model, run: ollama pull llama3.2"
 
-echo "Installing OSIRIS-Web & Conscience dependencies (Person C)..."
-pip install networkx pyvis explabox weasyprint
-
-echo "--------------------------------------------------------"
-echo "Setup complete!"
-echo "To start working, remember to activate your venv using:"
-echo "source .venv/bin/activate"
-echo "--------------------------------------------------------"
+echo ""
+echo "=========================================="
+echo "  Setup complete!"
+echo ""
+echo "  Activate your venv:"
+echo "    source venv/bin/activate"
+echo ""
+echo "  Run the pipeline:"
+echo "    python run_pipeline.py --target example.com \\"
+echo "      --input samples/spiderfoot_full.json \\"
+echo "      --output-dir outputs/ --mind-live"
+echo "=========================================="

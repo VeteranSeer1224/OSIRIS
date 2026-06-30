@@ -456,7 +456,7 @@ def enrich_dossier(
 def profile(
     raw_scan_path: str | Path,
     output_path: str | Path,
-    backend_name: str = "deepseek",
+    backend_name: str = "ollama",
     model: Optional[str] = None,
     prompt_version: str = "v2",
     dry_run: bool = False,
@@ -769,9 +769,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--input",    "-i", help="Path to raw_scan.json (Contract 1 input)")
     p.add_argument("--output",   "-o", help="Path to write dossier.json (Contract 2 output)")
-    p.add_argument("--backend",  "-b", default="deepseek",
+    p.add_argument("--backend",  "-b", default="ollama",
                    choices=["deepseek", "openai", "anthropic", "ollama"],
-                   help="LLM backend to use (default: deepseek)")
+                   help="LLM backend to use (default: ollama)")
     p.add_argument("--model",    "-m", default=None,
                    help="Model name override (e.g. deepseek-chat, deepseek-reasoner, gpt-4o, llama3.2)")
     p.add_argument("--prompt",   "-p", default="v2",

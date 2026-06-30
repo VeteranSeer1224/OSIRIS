@@ -1,7 +1,23 @@
-jsonschema>=4.17.0
-pytest>=7.0.0
-pydantic>=2.0.0
-networkx>=3.0
-weasyprint>=61.0
-tldextract>=3.0.0
-openai>=1.0.0
+# ── Core pipeline dependencies (pinned for reproducibility) ──────────────
+jsonschema==4.26.0
+pydantic==2.13.4
+networkx==3.6.1
+requests==2.34.2
+tldextract==5.3.1
+
+# ── Stage 2: OSIRIS-Mind (LLM backends) ─────────────────────────────────
+openai==2.44.0                  # DeepSeek + OpenAI backends (both use the OpenAI SDK)
+# anthropic                     # Uncomment if using the Anthropic/Claude backend
+
+# ── Stage 3: OSIRIS-Web (graph visualization) ────────────────────────────
+pyvis==0.3.2
+
+# ── Stage 4: OSIRIS-Conscience (explainability) ─────────────────────────
+explabox==1.0.3                 # Optional: fallback backend works without it
+
+# ── Stage 5: OSIRIS-Report (PDF export) ──────────────────────────────────
+weasyprint==69.0                # Requires system libs: libpango-1.0-0, libpangocairo-1.0-0
+                                # Install via: sudo apt install libpango-1.0-0 libpangocairo-1.0-0
+
+# ── Testing ──────────────────────────────────────────────────────────────
+pytest==9.1.1

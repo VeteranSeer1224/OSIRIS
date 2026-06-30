@@ -437,11 +437,11 @@ class TestScoreVariance:
 class TestDeepSeekBackend:
 
     def test_deepseek_is_default_backend(self):
-        """profile() and CLI both default to deepseek."""
+        """profile() and CLI both default to ollama (local model)."""
         import inspect
         from mind.mind_profile import profile
         sig = inspect.signature(profile)
-        assert sig.parameters["backend_name"].default == "deepseek"
+        assert sig.parameters["backend_name"].default == "ollama"
 
     def test_get_backend_deepseek_registered(self):
         from mind.mind_profile import get_backend, DeepSeekBackend
