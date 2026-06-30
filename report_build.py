@@ -99,10 +99,27 @@ def calculate_risk(findings):
     }
 
 
-def build_report(scan):
+def build_report(scan, dossier=None, explanation_cards=None):
+    """Build Stage 5 report. When a dossier is supplied, XAI cards are mandatory."""
     summary = build_summary(scan)
     findings = build_findings(scan)
-    risk = calculate_risk(findings)
+
+    if dossier is not None:
+        risk = {
+            "score": dossier.get("risk_score", 0),
+            "rating": (dossier.get("risk_level") or "UNKNOWN").lower(),
+            "source": "OSIRIS-Mind",
+        }
+        if explanation_cards is None:
+            raise ValueError(
+                "Stage 4 audit gate: dossier risk scores require explanation_cards.json"
+            )
+        _assert_explanation_gate(dossier, explanation_cards)
+    else:
+        risk = calculate_risk(findings)
+        risk["source"] = "entity_severity_heuristic"
+
+    xai_audit = _build_xai_audit_section(dossier, explanation_cards)
 
     report = {
         "report_metadata": {
@@ -122,9 +139,50 @@ def build_report(scan):
         }
     }
 
+    if dossier is not None:
+        report["dossier_summary"] = {
+            "target": dossier.get("target"),
+            "executive_summary": dossier.get("executive_summary", ""),
+            "risk_level": dossier.get("risk_level"),
+            "profiled_at": dossier.get("profiled_at"),
+        }
+
+    if xai_audit is not None:
+        report["xai_audit"] = xai_audit
+
     validate_report(report)
 
     return report
+
+
+def _assert_explanation_gate(dossier, explanation_cards):
+    """Ensure every dossier target has a matching explanation card."""
+    target = dossier.get("target")
+    cards = explanation_cards.get("cards", []) if isinstance(explanation_cards, dict) else []
+    matched = any(card.get("entity") == target for card in cards)
+    if not matched:
+        raise ValueError(
+            f"Stage 4 audit gate failed: no explanation card for target '{target}'"
+        )
+
+
+def _build_xai_audit_section(dossier, explanation_cards):
+    if explanation_cards is None:
+        return None
+
+    cards = explanation_cards.get("cards", [])
+    return {
+        "schema_version": explanation_cards.get("schema_version", "1.0"),
+        "generated_at": explanation_cards.get("generated_at"),
+        "card_count": explanation_cards.get("card_count", len(cards)),
+        "overall_fairness_passed": all(
+            card.get("fairness_check", {}).get("passed", True) for card in cards
+        ),
+        "overall_robustness_passed": all(
+            card.get("robustness_check", {}).get("passed", True) for card in cards
+        ),
+        "cards": cards,
+    }
 
 
 def load_json(path):
@@ -190,6 +248,17 @@ def export_pdf(report, output_path):
     
     risk = report.get("risk_assessment", {})
     html_content += f"<h2>Risk Assessment</h2><p>Level: {risk.get('rating')} (Score: {risk.get('score')})</p>"
+
+    xai = report.get("xai_audit")
+    if xai:
+        html_content += "<h2>Explainability Audit (Stage 4)</h2>"
+        html_content += f"<p>Cards: {xai.get('card_count', 0)} | "
+        html_content += f"Fairness passed: {xai.get('overall_fairness_passed')} | "
+        html_content += f"Robustness passed: {xai.get('overall_robustness_passed')}</p>"
+        for card in xai.get("cards", []):
+            html_content += f"<h3>{card.get('entity')}</h3>"
+            html_content += f"<p>Score: {card.get('risk_score')} | Confidence: {card.get('confidence')}</p>"
+            html_content += f"<p>{card.get('explanation', '')}</p>"
     
     html_content += "<h2>Findings Appendix</h2>"
     for finding in report.get("findings", []):

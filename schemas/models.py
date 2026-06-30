@@ -144,3 +144,57 @@ class Dossier(BaseModel):
         else:
             self.risk_level = "CRITICAL"
         return self
+
+
+# ---------------------------------------------------------------------------
+# Contract 3 — explanation_cards.json  (output of OSIRIS-Conscience)
+# ---------------------------------------------------------------------------
+
+class ExplanationFeature(BaseModel):
+    feature: str
+    contribution: str
+    plain_language: str
+
+
+class FairnessCheck(BaseModel):
+    passed: bool
+    flagged: bool = False
+    notes: List[str] = Field(default_factory=list)
+    max_score_delta: float = 0
+    avg_score_delta: float = 0
+    threshold: float = 10
+    evaluated_variants: int = 0
+
+
+class RobustnessCheck(BaseModel):
+    passed: bool
+    notes: List[str] = Field(default_factory=list)
+    max_score_delta: float = 0
+    avg_score_delta: float = 0
+    threshold: float = 10
+    decision_flipped: bool = False
+    feature_stability: float = 1.0
+    evaluated_variants: int = 0
+
+
+class ExplanationCard(BaseModel):
+    entity_id: str
+    entity: str
+    timestamp: str
+    risk_score: int = Field(..., ge=0, le=100)
+    top_features: List[ExplanationFeature]
+    supporting_evidence: List[str]
+    contradicting_evidence: List[str]
+    explanation: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    fairness_check: FairnessCheck
+    robustness_check: RobustnessCheck
+
+
+class ExplanationCards(BaseModel):
+    schema_version: str = "1.0"
+    generated_at: str
+    target: Optional[str] = None
+    targets: List[str] = Field(default_factory=list)
+    card_count: int = Field(..., ge=1)
+    cards: List[ExplanationCard]

@@ -1,3 +1,4 @@
+import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,12 +99,24 @@ def normalize_entities(raw_data):
 def extract_events(raw_data):
     events = []
     
-    current_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    default_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for item in raw_data:
         sf_type = item.get("type", "")
         value = item.get("data", "")
         module = item.get("module", "")
+        
+        # Use the SpiderFoot-provided timestamp if available
+        updated_raw = item.get("updated", "")
+        if updated_raw:
+            try:
+                # SpiderFoot CSV format: "2026-06-29 09:51:23"
+                dt = datetime.strptime(updated_raw, "%Y-%m-%d %H:%M:%S")
+                event_time = dt.replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except (ValueError, TypeError):
+                event_time = default_time
+        else:
+            event_time = default_time
 
         sf_upper = sf_type.upper()
         
@@ -122,7 +135,7 @@ def extract_events(raw_data):
             
         if event_type:
             events.append({
-                "date": current_time,
+                "date": event_time,
                 "type": event_type,
                 "entity": value,
                 "source": module,
@@ -132,12 +145,49 @@ def extract_events(raw_data):
     return events
 
 
-def generate_raw_scan(target, spiderfoot_json):
-    if isinstance(spiderfoot_json, str):
-        with open(spiderfoot_json, "r", encoding="utf-8") as f:
-            raw_data = json.load(f)
+def load_spiderfoot_input(path):
+    """
+    Load a SpiderFoot export from either a CSV or JSON file.
+    
+    SpiderFoot CSV columns: Updated, Type, Module, Source, F/P, Data
+    Returns a list of dicts with keys: type, module, source, data
+    """
+    path = str(path)
+    
+    if path.lower().endswith(".csv"):
+        rows = []
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Skip false positives if flagged
+                if row.get("F/P", "0").strip() == "1":
+                    continue
+                rows.append({
+                    "type": row.get("Type", "").strip(),
+                    "module": row.get("Module", "").strip(),
+                    "source": row.get("Source", "").strip(),
+                    "data": row.get("Data", "").strip(),
+                    "updated": row.get("Updated", "").strip(),
+                })
+        return rows
     else:
-        raw_data = spiderfoot_json
+        # Assume JSON
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+
+def generate_raw_scan(target, spiderfoot_input):
+    if isinstance(spiderfoot_input, str):
+        raw_data = load_spiderfoot_input(spiderfoot_input)
+    else:
+        raw_data = spiderfoot_input
+
+    # If the input is already a processed raw_scan dict (e.g. outputs/raw_scan.json),
+    # validate and return it directly instead of re-processing it as SpiderFoot data.
+    if isinstance(raw_data, dict) and "entities" in raw_data:
+        from schema_validation import validate_raw_scan
+        validate_raw_scan(raw_data)
+        return raw_data
 
     entities, unknown_entities = normalize_entities(raw_data)
 

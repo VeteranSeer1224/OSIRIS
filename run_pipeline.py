@@ -8,8 +8,16 @@ from sense_clean import generate_raw_scan
 from report_build import build_report, export_pdf, export_misp
 from schema_validation import (
     validate_raw_scan,
-    validate_report
+    validate_report,
+    validate_explanation_cards,
 )
+from explanation_card_build import BuildConfig, build_artifacts, write_outputs
+from graph_build import build_graph, render_graph
+
+_MIND_DIR = Path(__file__).resolve().parent / "mind"
+if str(_MIND_DIR) not in sys.path:
+    sys.path.insert(0, str(_MIND_DIR))
+from mind_profile import profile  # noqa: E402
 
 
 class PipelineError(Exception):
@@ -65,8 +73,11 @@ def pipeline_from_existing_scan(
     spiderfoot_json,
     output_dir,
     do_export_pdf=False,
-    do_export_misp=False
+    do_export_misp=False,
+    mind_dry_run=True,
+    skip_graph=False,
 ):
+    """Run Sense → Mind → Web → Conscience → Report."""
     output_dir = ensure_dir(output_dir)
 
     raw_scan = generate_raw_scan(
@@ -76,32 +87,60 @@ def pipeline_from_existing_scan(
 
     validate_raw_scan(raw_scan)
 
-    raw_scan_path = (
-        output_dir / "raw_scan.json"
+    raw_scan_path = output_dir / "raw_scan.json"
+    save_json(raw_scan, raw_scan_path)
+
+    dossier_path = output_dir / "dossier.json"
+    dossier = profile(
+        raw_scan_path=str(raw_scan_path),
+        output_path=str(dossier_path),
+        dry_run=mind_dry_run,
     )
 
-    save_json(
+    graph_path = None
+    if not skip_graph:
+        graph, timeline = build_graph(raw_scan)
+        graph_path = output_dir / "graph.html"
+        render_graph(
+            graph,
+            timeline,
+            graph_path,
+            title=f"OSIRIS-Web — {target}",
+        )
+
+    conscience_config = BuildConfig(
+        input_path=dossier_path,
+        output_dir=output_dir,
+    )
+    conscience_artifacts = build_artifacts(conscience_config)
+    conscience_paths = write_outputs(conscience_artifacts, output_dir)
+    validate_explanation_cards(conscience_artifacts.explanation_cards)
+
+    explanation_cards = conscience_artifacts.explanation_cards
+    report = build_report(
         raw_scan,
-        raw_scan_path
+        dossier=dossier,
+        explanation_cards=explanation_cards,
     )
-
-    report = build_report(raw_scan)
 
     validate_report(report)
 
-    report_path = (
-        output_dir / "report.json"
-    )
-
-    save_json(
-        report,
-        report_path
-    )
+    report_path = output_dir / "report.json"
+    save_json(report, report_path)
 
     results = {
         "raw_scan": str(raw_scan_path),
-        "report": str(report_path)
+        "dossier": str(dossier_path),
+        "explanation_cards": str(conscience_paths["explanation_cards"]),
+        "fairness_report": str(conscience_paths["fairness_report"]),
+        "fairness_report_json": str(conscience_paths["fairness_report_json"]),
+        "robustness_report": str(conscience_paths["robustness_report"]),
+        "robustness_report_json": str(conscience_paths["robustness_report_json"]),
+        "report": str(report_path),
     }
+
+    if graph_path is not None:
+        results["graph"] = str(graph_path)
 
     if do_export_pdf:
         pdf_path = output_dir / "report.pdf"
@@ -120,14 +159,13 @@ def pipeline_with_spiderfoot(
     target,
     output_dir,
     do_export_pdf=False,
-    do_export_misp=False
+    do_export_misp=False,
+    mind_dry_run=True,
+    skip_graph=False,
 ):
     output_dir = ensure_dir(output_dir)
 
-    spiderfoot_output = (
-        output_dir /
-        "spiderfoot_output.json"
-    )
+    spiderfoot_output = output_dir / "spiderfoot_output.json"
 
     run_spiderfoot_scan(
         target,
@@ -139,7 +177,9 @@ def pipeline_with_spiderfoot(
         spiderfoot_output,
         output_dir,
         do_export_pdf,
-        do_export_misp
+        do_export_misp,
+        mind_dry_run,
+        skip_graph,
     )
 
 
@@ -177,6 +217,18 @@ def main():
         help="Export findings to MISP JSON format"
     )
 
+    parser.add_argument(
+        "--mind-live",
+        action="store_true",
+        help="Call a real LLM for Stage 2 (default: dry-run stub dossier)",
+    )
+
+    parser.add_argument(
+        "--skip-graph",
+        action="store_true",
+        help="Skip Stage 3 graph.html generation",
+    )
+
     args = parser.parse_args()
 
     try:
@@ -186,27 +238,31 @@ def main():
                 args.input,
                 args.output_dir,
                 args.export_pdf,
-                args.export_misp
+                args.export_misp,
+                mind_dry_run=not args.mind_live,
+                skip_graph=args.skip_graph,
             )
         else:
             results = pipeline_with_spiderfoot(
                 args.target,
                 args.output_dir,
                 args.export_pdf,
-                args.export_misp
+                args.export_misp,
+                mind_dry_run=not args.mind_live,
+                skip_graph=args.skip_graph,
             )
 
         print("\nPipeline completed successfully.\n")
-        print(
-            f"Raw Scan : {results.get('raw_scan')}"
-        )
-        print(
-            f"Report   : {results.get('report')}"
-        )
+        print(f"Raw Scan          : {results.get('raw_scan')}")
+        print(f"Dossier           : {results.get('dossier')}")
+        print(f"Explanation Cards : {results.get('explanation_cards')}")
+        if "graph" in results:
+            print(f"Graph             : {results.get('graph')}")
+        print(f"Report            : {results.get('report')}")
         if "pdf_report" in results:
-            print(f"PDF      : {results.get('pdf_report')}")
+            print(f"PDF               : {results.get('pdf_report')}")
         if "misp_export" in results:
-            print(f"MISP     : {results.get('misp_export')}")
+            print(f"MISP              : {results.get('misp_export')}")
 
     except PipelineError as e:
         print(

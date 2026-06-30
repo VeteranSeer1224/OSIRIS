@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -40,6 +41,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from explabox_wrapper import ExplaboxWrapper  # noqa: E402
+from schema_validation import validate_explanation_cards  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +91,9 @@ class BuildConfig:
 class BuildArtifacts:
     explanation_cards: JSONDict
     fairness_report_md: str
+    fairness_report_json: JSONDict
     robustness_report_md: str
+    robustness_report_json: JSONDict
     analysis_batches: List[JSONDict]
 
 
@@ -209,6 +213,12 @@ def _load_dossiers(input_path: Path) -> List[DossierDict]:
 
 
 
+def _entity_id(target: str) -> str:
+    """Stable identifier for an explanation card entity."""
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "_", target.strip().lower())
+    return slug or "unknown_entity"
+
+
 def _format_contribution(weight: Any) -> str:
     try:
         value = float(weight)
@@ -326,23 +336,36 @@ def _build_card_from_analysis(dossier: Mapping[str, Any], analysis: Mapping[str,
     fairness = expose.get("fairness", {}) if _is_mapping(expose.get("fairness")) else {}
     robustness = expose.get("robustness", {}) if _is_mapping(expose.get("robustness")) else {}
 
+    entity = _safe_str(explain.get("target") or dossier.get("target"), "unknown")
+
     return {
-        "entity": _safe_str(explain.get("target") or dossier.get("target"), "unknown"),
+        "entity_id": _entity_id(entity),
+        "entity": entity,
+        "timestamp": _utc_now(),
         # Use the dossier's canonical score as the card score.
-        # The wrapper's prediction is still useful for explainability internals,
-        # but the report should reflect the authored dossier contract.
-        "risk_score": _safe_int(dossier.get("risk_score", explain.get("prediction", 0)), 0),
+        "risk_score": _safe_int(dossier.get("risk_score", explain.get("risk_score", explain.get("prediction", 0))), 0),
         "top_features": top_features,
+        "supporting_evidence": list(_as_list(explain.get("positive_evidence", []))),
+        "contradicting_evidence": list(_as_list(explain.get("negative_evidence", []))),
+        "explanation": _safe_str(explain.get("explanation", "")),
+        "confidence": float(explain.get("confidence", 1.0)),
         "fairness_check": {
             "passed": bool(fairness.get("passed", True)),
+            "flagged": bool(fairness.get("flagged", False)),
             "notes": _summarize_notes(fairness.get("notes", [])),
             "max_score_delta": fairness.get("max_score_delta", 0),
+            "avg_score_delta": fairness.get("avg_score_delta", 0),
+            "threshold": fairness.get("threshold", 10),
             "evaluated_variants": fairness.get("evaluated_variants", 0),
         },
         "robustness_check": {
             "passed": bool(robustness.get("passed", True)),
             "notes": _summarize_notes(robustness.get("notes", [])),
             "max_score_delta": robustness.get("max_score_delta", 0),
+            "avg_score_delta": robustness.get("avg_score_delta", 0),
+            "threshold": robustness.get("threshold", 10),
+            "decision_flipped": bool(robustness.get("decision_flipped", False)),
+            "feature_stability": robustness.get("feature_stability", 1.0),
             "evaluated_variants": robustness.get("evaluated_variants", 0),
         },
     }
@@ -368,7 +391,10 @@ def _build_fairness_report(cards: Sequence[Mapping[str, Any]], analyses: Sequenc
         lines.append("")
         lines.append(f"- Risk score: `{card.get('risk_score', 0)}`")
         lines.append(f"- Passed: `{bool(fairness.get('passed', True))}`")
+        lines.append(f"- Flagged: `{bool(fairness.get('flagged', False))}`")
         lines.append(f"- Max score delta: `{fairness.get('max_score_delta', 0)}`")
+        lines.append(f"- Avg score delta: `{fairness.get('avg_score_delta', 0)}`")
+        lines.append(f"- Threshold: `{fairness.get('threshold', 10)}`")
         lines.append(f"- Evaluated variants: `{fairness.get('evaluated_variants', 0)}`")
         notes = _summarize_notes(fairness.get('notes', []))
         if notes:
@@ -400,7 +426,11 @@ def _build_robustness_report(cards: Sequence[Mapping[str, Any]], analyses: Seque
         lines.append("")
         lines.append(f"- Risk score: `{card.get('risk_score', 0)}`")
         lines.append(f"- Passed: `{bool(robustness.get('passed', True))}`")
+        lines.append(f"- Decision flipped: `{bool(robustness.get('decision_flipped', False))}`")
         lines.append(f"- Max score delta: `{robustness.get('max_score_delta', 0)}`")
+        lines.append(f"- Avg score delta: `{robustness.get('avg_score_delta', 0)}`")
+        lines.append(f"- Threshold: `{robustness.get('threshold', 10)}`")
+        lines.append(f"- Feature stability: `{robustness.get('feature_stability', 1.0)}`")
         lines.append(f"- Evaluated variants: `{robustness.get('evaluated_variants', 0)}`")
         notes = _summarize_notes(robustness.get('notes', []))
         if notes:
@@ -411,6 +441,69 @@ def _build_robustness_report(cards: Sequence[Mapping[str, Any]], analyses: Seque
 
     return "\n".join(lines).rstrip() + "\n"
 
+
+
+def _build_fairness_report_json(cards: Sequence[Mapping[str, Any]], analyses: Sequence[Mapping[str, Any]], target_label: str) -> JSONDict:
+    """Structured JSON fairness report."""
+    per_card: List[JSONDict] = []
+    all_passed = True
+    for card, analysis in zip(cards, analyses):
+        expose = analysis.get("expose", {}) if _is_mapping(analysis.get("expose")) else {}
+        fairness = expose.get("fairness", {}) if _is_mapping(expose.get("fairness")) else {}
+        passed = bool(fairness.get("passed", True))
+        if not passed:
+            all_passed = False
+        per_card.append({
+            "entity": _safe_str(card.get("entity"), "unknown"),
+            "risk_score": card.get("risk_score", 0),
+            "passed": passed,
+            "flagged": bool(fairness.get("flagged", False)),
+            "max_score_delta": fairness.get("max_score_delta", 0),
+            "avg_score_delta": fairness.get("avg_score_delta", 0),
+            "threshold": fairness.get("threshold", 10),
+            "evaluated_variants": fairness.get("evaluated_variants", 0),
+            "notes": _summarize_notes(fairness.get("notes", [])),
+        })
+    return {
+        "schema_version": "1.0",
+        "generated_at": _utc_now(),
+        "target": target_label,
+        "overall_passed": all_passed,
+        "card_count": len(per_card),
+        "cards": per_card,
+    }
+
+
+def _build_robustness_report_json(cards: Sequence[Mapping[str, Any]], analyses: Sequence[Mapping[str, Any]], target_label: str) -> JSONDict:
+    """Structured JSON robustness report."""
+    per_card: List[JSONDict] = []
+    all_passed = True
+    for card, analysis in zip(cards, analyses):
+        expose = analysis.get("expose", {}) if _is_mapping(analysis.get("expose")) else {}
+        robustness = expose.get("robustness", {}) if _is_mapping(expose.get("robustness")) else {}
+        passed = bool(robustness.get("passed", True))
+        if not passed:
+            all_passed = False
+        per_card.append({
+            "entity": _safe_str(card.get("entity"), "unknown"),
+            "risk_score": card.get("risk_score", 0),
+            "passed": passed,
+            "decision_flipped": bool(robustness.get("decision_flipped", False)),
+            "max_score_delta": robustness.get("max_score_delta", 0),
+            "avg_score_delta": robustness.get("avg_score_delta", 0),
+            "threshold": robustness.get("threshold", 10),
+            "feature_stability": robustness.get("feature_stability", 1.0),
+            "evaluated_variants": robustness.get("evaluated_variants", 0),
+            "notes": _summarize_notes(robustness.get("notes", [])),
+        })
+    return {
+        "schema_version": "1.0",
+        "generated_at": _utc_now(),
+        "target": target_label,
+        "overall_passed": all_passed,
+        "card_count": len(per_card),
+        "cards": per_card,
+    }
 
 
 def build_artifacts(config: BuildConfig) -> BuildArtifacts:
@@ -440,12 +533,16 @@ def build_artifacts(config: BuildConfig) -> BuildArtifacts:
     }
 
     fairness_report_md = _build_fairness_report(cards, analyses, target_label)
+    fairness_report_json = _build_fairness_report_json(cards, analyses, target_label)
     robustness_report_md = _build_robustness_report(cards, analyses, target_label)
+    robustness_report_json = _build_robustness_report_json(cards, analyses, target_label)
 
     return BuildArtifacts(
         explanation_cards=explanation_cards,
         fairness_report_md=fairness_report_md,
+        fairness_report_json=fairness_report_json,
         robustness_report_md=robustness_report_md,
+        robustness_report_json=robustness_report_json,
         analysis_batches=analyses,
     )
 
@@ -460,19 +557,31 @@ def write_outputs(artifacts: BuildArtifacts, output_dir: Path) -> Dict[str, Path
 
     explanation_cards_path = output_dir / "explanation_cards.json"
     fairness_report_path = output_dir / "fairness_report.md"
+    fairness_report_json_path = output_dir / "fairness_report.json"
     robustness_report_path = output_dir / "robustness_report.md"
+    robustness_report_json_path = output_dir / "robustness_report.json"
 
     explanation_cards_path.write_text(
         json.dumps(artifacts.explanation_cards, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     fairness_report_path.write_text(artifacts.fairness_report_md, encoding="utf-8")
+    fairness_report_json_path.write_text(
+        json.dumps(artifacts.fairness_report_json, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
     robustness_report_path.write_text(artifacts.robustness_report_md, encoding="utf-8")
+    robustness_report_json_path.write_text(
+        json.dumps(artifacts.robustness_report_json, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     return {
         "explanation_cards": explanation_cards_path,
         "fairness_report": fairness_report_path,
+        "fairness_report_json": fairness_report_json_path,
         "robustness_report": robustness_report_path,
+        "robustness_report_json": robustness_report_json_path,
     }
 
 
@@ -524,11 +633,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     log.info("Loading dossier(s) from %s", config.input_path)
     artifacts = build_artifacts(config)
+    validate_explanation_cards(artifacts.explanation_cards)
     paths = write_outputs(artifacts, config.output_dir)
 
     log.info("Wrote %s", paths["explanation_cards"])
     log.info("Wrote %s", paths["fairness_report"])
+    log.info("Wrote %s", paths["fairness_report_json"])
     log.info("Wrote %s", paths["robustness_report"])
+    log.info("Wrote %s", paths["robustness_report_json"])
     return 0
 
 

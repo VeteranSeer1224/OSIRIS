@@ -15,12 +15,17 @@ if str(REPO_ROOT) not in sys.path:
 
 from explabox_wrapper import ExplaboxWrapper  # noqa: E402
 import explanation_card_build  # noqa: E402
+from schema_validation import validate_explanation_cards  # noqa: E402
 
 
 @pytest.fixture()
 def sample_dossier() -> Dict[str, Any]:
     path = REPO_ROOT / "schemas" / "samples" / "sample_dossier.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    dossier = json.loads(path.read_text(encoding="utf-8"))
+    dossier.setdefault("risk_level", "HIGH")
+    dossier.setdefault("insufficient_data_flags", [])
+    dossier.setdefault("executive_summary", "Sample summary for example.com.")
+    return dossier
 
 
 @pytest.fixture()
@@ -47,6 +52,7 @@ def test_explanation_generation_returns_features(sample_dossier: Dict[str, Any])
 
     assert explanation["target"] == sample_dossier["target"]
     assert isinstance(explanation["prediction"], int)
+    assert explanation["risk_score"] == explanation["prediction"]
     assert explanation["top_features"]
     first = explanation["top_features"][0]
     assert {"feature", "value", "weight", "plain_language"}.issubset(first.keys())
@@ -89,11 +95,15 @@ def test_build_artifacts_writes_all_outputs(tmp_path: Path, sample_dossier_path:
     assert written["explanation_cards"].exists()
     assert written["fairness_report"].exists()
     assert written["robustness_report"].exists()
+    assert written["fairness_report_json"].exists()
+    assert written["robustness_report_json"].exists()
 
     cards = json.loads(written["explanation_cards"].read_text(encoding="utf-8"))
+    validate_explanation_cards(cards)
     assert cards["schema_version"] == "1.0"
     assert cards["card_count"] == 1
     assert cards["cards"][0]["entity"] == sample_dossier["target"]
+    assert cards["cards"][0]["entity_id"] == "example.com"
     assert cards["cards"][0]["risk_score"] == sample_dossier["risk_score"]
     assert cards["cards"][0]["top_features"]
 
