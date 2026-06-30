@@ -19,8 +19,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Pre-install CPU-only PyTorch to avoid downloading 6GB of CUDA wheels in CI
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # Pre-install pinned CPU-only PyTorch to avoid downloading 6GB of CUDA wheels in CI
+          pip install torch==2.12.1+cpu --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
       - name: Run tests
         run: |

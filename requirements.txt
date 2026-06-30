@@ -1,3 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # ── Core pipeline dependencies (pinned for reproducibility) ──────────────
 jsonschema==4.26.0
 pydantic==2.13.4
@@ -13,7 +15,8 @@ openai==2.44.0                  # DeepSeek + OpenAI backends (both use the OpenA
 pyvis==0.3.2
 
 # ── Stage 4: OSIRIS-Conscience (explainability) ─────────────────────────
-explabox==1.0.3                 # Optional: fallback backend works without it
+torch==2.12.1+cpu               # Pinned CPU wheel (~192MB) avoids 6GB CUDA downloads
+explabox==1.0.3                 # Explainability library
 
 # ── Stage 5: OSIRIS-Report (PDF export) ──────────────────────────────────
 weasyprint==69.0                # Requires system libs: libpango-1.0-0, libpangocairo-1.0-0
