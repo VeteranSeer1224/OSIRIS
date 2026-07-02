@@ -6,13 +6,18 @@ from pathlib import Path
 ENTITY_MAP = {
     "INTERNET_NAME": "domain",
     "DOMAIN_NAME": "domain",
+    "DOMAIN": "domain",
+    "HOST": "domain",
     "AFFILIATE_INTERNET_NAME": "domain",
     "CO_HOSTED_SITE": "domain",
 
     "IP_ADDRESS": "ip",
     "IPV6_ADDRESS": "ip",
+    "IP": "ip",
 
     "EMAILADDR": "email",
+    "EMAIL_ADDRESS": "email",
+    "EMAIL": "email",
     "ACCOUNT_EXTERNAL": "social_profile",
     "USERNAME": "username",
 
@@ -43,10 +48,12 @@ ENTITY_MAP = {
 
 
 def get_osiris_type(sf_type):
-    sf_type = (sf_type or "").upper()
+    sf_type_upper = (sf_type or "").upper()
+    sf_type_clean = sf_type_upper.replace(" ", "_")
 
     for key, value in ENTITY_MAP.items():
-        if key in sf_type:
+        key_clean = key.replace(" ", "_")
+        if key_clean in sf_type_clean or key in sf_type_upper:
             return value
 
     return "unknown"
@@ -60,17 +67,20 @@ def normalize_entities(raw_data):
 
     for item in raw_data:
         sf_type = item.get("type", "")
+        sf_type_descr = item.get("type_descr", "")
         sf_value = item.get("data", "")
 
         if not sf_value:
             continue
 
         osiris_type = get_osiris_type(sf_type)
+        if osiris_type == "unknown" and sf_type_descr:
+            osiris_type = get_osiris_type(sf_type_descr)
 
         if osiris_type == "unknown":
             unknown_entities.append({
                 "module": item.get("module"),
-                "type": sf_type,
+                "type": sf_type or sf_type_descr,
                 "value": sf_value,
                 "source": item.get("source")
             })
