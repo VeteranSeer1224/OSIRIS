@@ -56,17 +56,28 @@ def check_ethics_gate(disclaimer_path=None):
     return content
 
 
-def run_spiderfoot_scan(target, output_file):
+def run_spiderfoot_scan(target, output_file, modules=None, use_case=None):
     """
-    Optional helper if SpiderFoot is installed locally.
+    Helper to run SpiderFoot scan via spiderfoot_runner.
     """
+    try:
+        import spiderfoot_runner
+        spiderfoot_runner.run_scan(target, output_file, modules=modules, use_case=use_case)
+        return output_file
+    except ImportError:
+        pass
 
+    runner_path = Path(__file__).resolve().parent / "spiderfoot_runner.py"
     command = [
-        "python",
-        "spiderfoot_runner.py",
+        sys.executable,
+        str(runner_path),
         target,
         str(output_file)
     ]
+    if modules:
+        command.extend(["-m", modules])
+    if use_case:
+        command.extend(["-u", use_case])
 
     result = subprocess.run(
         command,
@@ -177,6 +188,8 @@ def pipeline_with_spiderfoot(
     do_export_misp=False,
     mind_dry_run=True,
     skip_graph=False,
+    modules=None,
+    use_case=None,
 ):
     output_dir = ensure_dir(output_dir)
 
@@ -184,7 +197,9 @@ def pipeline_with_spiderfoot(
 
     run_spiderfoot_scan(
         target,
-        spiderfoot_output
+        spiderfoot_output,
+        modules=modules,
+        use_case=use_case,
     )
 
     return pipeline_from_existing_scan(
@@ -244,6 +259,16 @@ def main():
         help="Skip Stage 3 graph.html generation",
     )
 
+    parser.add_argument(
+        "-m", "--modules",
+        help="Comma-separated list of SpiderFoot modules to run (e.g., sfp_whois,sfp_dnsresolve)",
+    )
+
+    parser.add_argument(
+        "-u", "--use-case",
+        help="Select SpiderFoot modules by use case (osiris_fast, osiris_full, threat_intel, infrastructure, identity, vulnerabilities, footprint, passive, investigate, all)",
+    )
+
     args = parser.parse_args()
 
     try:
@@ -265,6 +290,8 @@ def main():
                 args.export_misp,
                 mind_dry_run=not args.mind_live,
                 skip_graph=args.skip_graph,
+                modules=args.modules,
+                use_case=args.use_case,
             )
 
         print("\nPipeline completed successfully.\n")
