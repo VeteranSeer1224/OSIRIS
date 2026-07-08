@@ -1,7 +1,20 @@
 import csv
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+DOMAIN_RE = re.compile(
+    r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b"
+)
+
+IPV4_RE = re.compile(
+    r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
+)
+
+EMAIL_RE = re.compile(
+    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+)
 
 ENTITY_MAP = {
     "INTERNET_NAME": "domain",
@@ -10,10 +23,15 @@ ENTITY_MAP = {
     "HOST": "domain",
     "AFFILIATE_INTERNET_NAME": "domain",
     "CO_HOSTED_SITE": "domain",
+    "URL": "url",
+    "URL_STATIC": "url",
+    "URL_FORM": "url",
+    "INTERNET_NAME_UNRESOLVED": "domain",
+    "HOSTNAME": "domain",
 
     "IP_ADDRESS": "ip",
     "IPV6_ADDRESS": "ip",
-    "IP": "ip",
+    "AFFILIATE_IPADDR": "ip",
 
     "EMAILADDR": "email",
     "EMAIL_ADDRESS": "email",
@@ -23,6 +41,10 @@ ENTITY_MAP = {
 
     "PHONE_NUMBER": "phone",
     "PHYSICAL_ADDRESS": "address",
+    "GEOINFO": "location",
+
+    "HUMAN_NAME": "person",
+    "COMPANY_NAME": "organization",
 
     "BGP_AS": "asn",
     "BGP_AS_OWNER": "organization",
@@ -47,6 +69,45 @@ ENTITY_MAP = {
 }
 
 
+def clean_entity_value(entity_type: str, value: str):
+    if value is None:
+        return None
+
+    value = str(value).strip()
+
+    if not value:
+        return None
+
+    # Reject giant blobs immediately
+    if len(value) > 500:
+        return None
+
+    # Reject multiline payloads
+    if "\n" in value:
+        return None
+
+    # Reject JSON / Python objects
+    if value.startswith("{") or value.startswith("["):
+        return None
+
+    if entity_type == "domain":
+        m = DOMAIN_RE.search(value)
+        return m.group(0).lower() if m else None
+
+    if entity_type == "email":
+        m = EMAIL_RE.search(value)
+        return m.group(0).lower() if m else None
+
+    if entity_type == "ip":
+        m = IPV4_RE.search(value)
+        return m.group(0) if m else None
+
+    if entity_type == "social_profile":
+        return value
+
+    return value
+
+
 def get_osiris_type(sf_type):
     sf_type_upper = (sf_type or "").upper()
     sf_type_clean = sf_type_upper.replace(" ", "_")
@@ -67,15 +128,13 @@ def normalize_entities(raw_data):
 
     for item in raw_data:
         sf_type = item.get("type", "")
-        sf_type_descr = item.get("type_descr", "")
-        sf_value = item.get("data", "")
-
-        if not sf_value:
-            continue
+        raw_value = item.get("data", "")
 
         osiris_type = get_osiris_type(sf_type)
-        if osiris_type == "unknown" and sf_type_descr:
-            osiris_type = get_osiris_type(sf_type_descr)
+        sf_value = clean_entity_value(osiris_type, raw_value)
+
+        if sf_value is None:
+            continue
 
         if osiris_type == "unknown":
             unknown_entities.append({
@@ -110,14 +169,20 @@ def normalize_entities(raw_data):
 
 def extract_events(raw_data):
     events = []
-    
+
     default_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for item in raw_data:
         sf_type = item.get("type", "")
-        value = item.get("data", "")
         module = item.get("module", "")
-        
+        value = clean_entity_value(
+            get_osiris_type(sf_type),
+            item.get("data", "")
+        )
+
+        if value is None:
+            continue
+
         # Use the SpiderFoot-provided timestamp if available
         updated_raw = item.get("updated", "")
         if updated_raw:
@@ -131,7 +196,7 @@ def extract_events(raw_data):
             event_time = default_time
 
         sf_upper = sf_type.upper()
-        
+
         event_type = None
 
         if "DOMAIN_REGISTRAR" in sf_upper:
@@ -144,7 +209,7 @@ def extract_events(raw_data):
             event_type = "dns_change"
         elif "BREACH" in sf_upper:
             event_type = "breach_appearance"
-            
+
         if event_type:
             events.append({
                 "date": event_time,
@@ -160,12 +225,12 @@ def extract_events(raw_data):
 def load_spiderfoot_input(path):
     """
     Load a SpiderFoot export from either a CSV or JSON file.
-    
+
     SpiderFoot CSV columns: Updated, Type, Module, Source, F/P, Data
     Returns a list of dicts with keys: type, module, source, data
     """
     path = str(path)
-    
+
     if path.lower().endswith(".csv"):
         rows = []
         with open(path, "r", encoding="utf-8") as f:
