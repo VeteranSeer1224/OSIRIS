@@ -117,17 +117,62 @@ def canonicalize_value(val: str) -> str:
 
 def parse_social_host(value: str) -> Optional[str]:
     """
-    Extract host/platform from a social profile URL or string using urllib.parse.urlparse.
-    Supports: https://github.com/user, http://twitter.com/user, github.com/user, etc.
+    Extract the hostname/platform from a social profile URL or hostname.
+
+    Supports:
+        https://github.com/user
+        http://twitter.com/user
+        github.com/user
+        linkedin.com/in/user
+
+    Safely ignores malformed SpiderFoot payloads such as JSON blobs,
+    Python dict/list strings, multiline values, and invalid URLs.
     """
-    if not value or not isinstance(value, str):
+    if not isinstance(value, str):
         return None
+
     val = value.strip()
+
     if not val:
         return None
-    parsed = urlparse(val if "://" in val else f"//{val}")
-    host = parsed.hostname or (parsed.netloc.split(":")[0].split("/")[0] if parsed.netloc else None)
-    return host.lower() if host else None
+
+    # Reject obvious serialized objects or multiline payloads
+    if (
+        "\n" in val
+        or val.startswith("{")
+        or val.startswith("[")
+        or val.startswith("('")
+        or val.startswith("('")
+    ):
+        return None
+
+    try:
+        parsed = urlparse(val if "://" in val else f"//{val}")
+    except ValueError:
+        return None
+
+    host = parsed.hostname
+
+    if not host and parsed.netloc:
+        host = parsed.netloc.split(":")[0].split("/")[0]
+
+    if not host:
+        return None
+
+    host = host.strip().lower().rstrip(".")
+
+    # Reject malformed hosts
+    if (
+        not host
+        or " " in host
+        or host.startswith("[")
+        or host.endswith("]")
+        or host.startswith("{")
+        or host.startswith("(")
+    ):
+        return None
+
+    return host
 
 
 def extract_root_domain(domain_str: str) -> Optional[str]:
@@ -147,16 +192,17 @@ def extract_root_domain(domain_str: str) -> Optional[str]:
 
 
 def extract_domain(value: str) -> Optional[str]:
-    """
-    Extract domain/host from arbitrary string (email, URL, domain).
-    """
-    if not value or not isinstance(value, str):
+    if not isinstance(value, str):
         return None
+
     val = value.strip()
+
     if not val:
         return None
+
     if "@" in val:
         val = val.split("@", 1)[1]
+
     return parse_social_host(val)
 
 

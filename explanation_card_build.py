@@ -42,6 +42,7 @@ if str(HERE) not in sys.path:
 
 from explabox_wrapper import ExplaboxWrapper  # noqa: E402
 from schema_validation import validate_explanation_cards  # noqa: E402
+from schemas.models import ExplanationCards  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +538,9 @@ def build_artifacts(config: BuildConfig) -> BuildArtifacts:
     robustness_report_md = _build_robustness_report(cards, analyses, target_label)
     robustness_report_json = _build_robustness_report_json(cards, analyses, target_label)
 
+    validate_explanation_cards(explanation_cards)
+    ExplanationCards.model_validate(explanation_cards)
+
     return BuildArtifacts(
         explanation_cards=explanation_cards,
         fairness_report_md=fairness_report_md,
@@ -634,6 +638,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     log.info("Loading dossier(s) from %s", config.input_path)
     artifacts = build_artifacts(config)
     validate_explanation_cards(artifacts.explanation_cards)
+    ExplanationCards.model_validate(artifacts.explanation_cards)
     paths = write_outputs(artifacts, config.output_dir)
 
     log.info("Wrote %s", paths["explanation_cards"])

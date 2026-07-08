@@ -28,6 +28,8 @@ RAW_SCAN_SCHEMA = {
                 "properties": {
                     "type": { "type": "string" },
                     "value": { "type": "string" },
+                    "source_module": { "type": ["string", "null"] },
+                    "source": { "type": ["string", "null"] },
                     "platform": { "type": ["string", "null"] },
                     "metadata": { "type": ["object", "null"] }
                 }
@@ -52,40 +54,6 @@ RAW_SCAN_SCHEMA = {
             }
         },
         "raw_module_output": {
-            "type": "object"
-        }
-    }
-}
-
-
-REPORT_SCHEMA = {
-    "type": "object",
-    "required": [
-        "report_metadata",
-        "summary",
-        "risk_assessment",
-        "findings"
-    ],
-    "properties": {
-        "report_metadata": {
-            "type": "object"
-        },
-        "summary": {
-            "type": "object"
-        },
-        "risk_assessment": {
-            "type": "object"
-        },
-        "findings": {
-            "type": "array"
-        },
-        "events": {
-            "type": "array"
-        },
-        "dossier_summary": {
-            "type": "object"
-        },
-        "xai_audit": {
             "type": "object"
         }
     }
@@ -138,6 +106,91 @@ EXPLANATION_CARDS_SCHEMA = {
 }
 
 
+XAI_AUDIT_SCHEMA = {
+    "type": "object",
+    "required": [
+        "schema_version",
+        "card_count",
+        "overall_fairness_passed",
+        "overall_robustness_passed",
+        "cards",
+    ],
+    "properties": {
+        "schema_version": {"type": "string"},
+        "generated_at": {"type": ["string", "null"]},
+        "card_count": {"type": "integer", "minimum": 0},
+        "overall_fairness_passed": {"type": "boolean"},
+        "overall_robustness_passed": {"type": "boolean"},
+        "cards": EXPLANATION_CARDS_SCHEMA["properties"]["cards"],
+    },
+}
+
+
+REPORT_SCHEMA = {
+    "type": "object",
+    "required": [
+        "report_metadata",
+        "summary",
+        "risk_assessment",
+        "findings"
+    ],
+    "properties": {
+        "report_metadata": {
+            "type": "object"
+        },
+        "summary": {
+            "type": "object"
+        },
+        "risk_assessment": {
+            "type": "object"
+        },
+        "findings": {
+            "type": "array"
+        },
+        "events": {
+            "type": "array"
+        },
+        "dossier_summary": {
+            "type": "object"
+        },
+        "xai_audit": XAI_AUDIT_SCHEMA,
+        "disclaimer_appendix": {
+            "type": ["string", "null"]
+        }
+    }
+}
+
+
+DOSSIER_SCHEMA = {
+    "type": "object",
+    "required": [
+        "target",
+        "scan_date",
+        "profiled_at",
+        "profile",
+        "risk_score",
+        "risk_features",
+        "executive_summary",
+        "model_metadata"
+    ],
+    "properties": {
+        "target": { "type": "string" },
+        "scan_date": { "type": "string" },
+        "profiled_at": { "type": "string" },
+        "risk_score": { "type": "integer" },
+        "risk_level": { "type": ["string", "null"] },
+        "injection_detected": { "type": "boolean" },
+        "injection_details": { "type": ["string", "null"] },
+        "profile": { "type": "object" },
+        "risk_features": { "type": "array" },
+        "insufficient_data_flags": { "type": "array" },
+        "executive_summary": { "type": "string" },
+        "model_metadata": { "type": "object" },
+        "schema_version": { "type": "string" }
+    }
+}
+
+
 def validate_raw_scan(scan):
     try:
         validate(
@@ -161,6 +214,19 @@ def validate_report(report):
     except ValidationError as e:
         raise ValueError(
             f"Report schema error: {e.message}"
+        )
+
+
+def validate_dossier(dossier):
+    try:
+        validate(
+            instance=dossier,
+            schema=DOSSIER_SCHEMA
+        )
+        return True
+    except ValidationError as e:
+        raise ValueError(
+            f"Dossier schema error: {e.message}"
         )
 
 

@@ -8,6 +8,6 @@ By contributing to or operating this pipeline, all team members agree to the fol
 4. **Mandatory Explainability:** The XAI audit layer (Stage 4) is a mandatory gate. No high-risk finding may reach the final report without an attached feature attribution and fairness check.
 
 **Acknowledged By:**
-- [ ] Person A (Sense & Report)
-- [ ] Person B (Mind)
-- [ ] Person C (Web & Conscience)
+- [x] Person A (Sense & Report)
+- [x] Person B (Mind)
+- [x] Person C (Web & Conscience)

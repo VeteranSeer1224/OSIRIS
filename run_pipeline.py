@@ -25,7 +25,7 @@ class PipelineError(Exception):
 
 
 def ensure_dir(path):
-    path = Path(path)
+    path = Path(path).resolve()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -40,6 +40,20 @@ def save_json(data, path):
         json.dump(data, f, indent=4)
 
 
+
+
+def check_ethics_gate(disclaimer_path=None):
+    """Stage 0: Verify ethics gate disclaimer acknowledgment."""
+    if disclaimer_path is None:
+        disclaimer_path = Path(__file__).resolve().parent / "DISCLAIMER.md"
+    else:
+        disclaimer_path = Path(disclaimer_path)
+    if not disclaimer_path.exists():
+        raise PipelineError("Stage 0 Ethics Gate failed: DISCLAIMER.md not found.")
+    content = disclaimer_path.read_text(encoding="utf-8")
+    if "- [x]" not in content and "- [X]" not in content:
+        raise PipelineError("Stage 0 Ethics Gate failed: DISCLAIMER.md must be acknowledged by team contributors.")
+    return content
 
 
 def run_spiderfoot_scan(target, output_file):
@@ -78,6 +92,7 @@ def pipeline_from_existing_scan(
     skip_graph=False,
 ):
     """Run Sense → Mind → Web → Conscience → Report."""
+    check_ethics_gate()
     output_dir = ensure_dir(output_dir)
 
     raw_scan = generate_raw_scan(
