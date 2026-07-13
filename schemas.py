@@ -1,3 +1,13 @@
+\"\"\"
+DEPRECATED — This file is not imported by any module in the OSIRIS pipeline.
+
+Schema validation is handled by:
+  - schema_validation.py  (jsonschema-based validation)
+  - schemas/models.py     (Pydantic models)
+
+This file is kept for reference only. Do not add new schemas here.
+\"\"\"
+
 RAW_SCAN_SCHEMA = {
     "target": str,
     "scan_date": str,

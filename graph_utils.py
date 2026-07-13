@@ -142,7 +142,7 @@ def parse_social_host(value: str) -> Optional[str]:
         or val.startswith("{")
         or val.startswith("[")
         or val.startswith("('")
-        or val.startswith("('")
+        or val.startswith('["')
     ):
         return None
 

@@ -139,7 +139,7 @@ def normalize_entities(raw_data):
         if osiris_type == "unknown":
             unknown_entities.append({
                 "module": item.get("module"),
-                "type": sf_type or sf_type_descr,
+                "type": sf_type or "unknown",
                 "value": sf_value,
                 "source": item.get("source")
             })
@@ -268,7 +268,7 @@ def generate_raw_scan(target, spiderfoot_input):
 
     entities, unknown_entities = normalize_entities(raw_data)
 
-    from schema_validation import validate_raw_scan
+    from schema_validation import validate_raw_scan  # noqa: F811
 
     scan = {
         "target": target,
