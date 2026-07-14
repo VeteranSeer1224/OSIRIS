@@ -53,12 +53,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Protocol, Sequence, Tuple, Union
 
-_MIND_DIR = Path(__file__).resolve().parent / "mind"
-if str(_MIND_DIR) not in sys.path:
-    sys.path.insert(0, str(_MIND_DIR))
-
 try:
-    from mind_profile import extract_feature_vector, score_from_features  # noqa: E402
+    from mind.mind_profile import (
+        extract_feature_vector,
+        score_from_features,
+        DeterministicScorer,
+        _default_scorer,
+        normalise_value,
+        DEFAULT_WEIGHTS,
+    )  # noqa: E402
     _MIND_SCORING_AVAILABLE = True
 except ImportError:
     _MIND_SCORING_AVAILABLE = False
@@ -178,40 +181,44 @@ def _compute_confidence(dossier: Mapping[str, Any]) -> float:
 
 
 def _build_explanation(dossier: Mapping[str, Any], top_features: List[Mapping[str, Any]]) -> str:
-    """Generate a natural-language explanation grounded in dossier fields.
+    """Generate a comprehensive, natural-language explanation grounded in dossier fields.
 
-    Every sentence is derived from actual data — no invented statements.
+    Synthesizes multiple risk drivers and mitigating factors into a cohesive analytical summary.
     """
-    target = _safe_str(dossier.get("target"), "unknown")
-    score = _safe_str(dossier.get("risk_score"), "0")
-    level = _safe_str(dossier.get("risk_level")) or _risk_level(_clip_score(float(score)))
-    exec_summary = _safe_str(dossier.get("executive_summary"), "")
+    target = _safe_str(dossier.get("target"), "unknown target")
+    score = _clip_score(float(dossier.get("risk_score", 0) or 0))
+    level = _safe_str(dossier.get("risk_level")) or _risk_level(score)
+    exec_summary = _safe_str(dossier.get("executive_summary"), "").strip()
 
     positive = []
     negative = []
     for feat in top_features:
         if not isinstance(feat, Mapping):
             continue
-        plain = _safe_str(feat.get("plain_language"), "")
-        if not plain:
-            name = _safe_str(feat.get("feature"), "feature")
-            value = _safe_str(feat.get("value"), "unknown")
-            plain = f"{name}={value}"
+        plain = _safe_str(feat.get("plain_language"), "").strip()
+        if not plain or plain.endswith("increased the score.") or plain.endswith("decreased the score."):
+            plain = _feature_plain_language(feat)
         weight = feat.get("weight", 0)
         if isinstance(weight, (int, float)) and weight >= 0:
-            positive.append(plain)
+            positive.append(plain.rstrip("."))
         else:
-            negative.append(plain)
+            negative.append(plain.rstrip("."))
 
     parts: List[str] = []
     parts.append(f"{target} received a risk score of {score} ({level}).")
 
     if positive:
-        parts.append("Primary risk drivers: " + "; ".join(positive) + ".")
+        if len(positive) == 1:
+            parts.append(f"Primary risk driver: {positive[0]}.")
+        else:
+            parts.append(f"Primary risk drivers: {'; '.join(positive)}.")
     if negative:
-        parts.append("Mitigating factors: " + "; ".join(negative) + ".")
+        if len(negative) == 1:
+            parts.append(f"Mitigating factor: {negative[0]}.")
+        else:
+            parts.append(f"Mitigating factors: {'; '.join(negative)}.")
 
-    if exec_summary and exec_summary != "none":
+    if exec_summary and exec_summary.lower() not in ("none", "null", ""):
         parts.append(exec_summary)
 
     return " ".join(parts)
@@ -334,9 +341,11 @@ def dossier_to_text(dossier: Mapping[str, Any]) -> str:
 
 
 def _feature_plain_language(feature: Mapping[str, Any]) -> str:
-    """Best-effort plain-language description for a risk feature."""
+    """Comprehensive plain-language description for a risk feature."""
     if "plain_language" in feature and feature["plain_language"]:
-        return _safe_str(feature["plain_language"])
+        pl = _safe_str(feature["plain_language"]).strip()
+        if not (pl.endswith("increased the score.") or pl.endswith("decreased the score.") or pl.endswith("affected the score.")):
+            return pl
 
     name = _safe_str(feature.get("feature"), "feature")
     value = feature.get("value")
@@ -348,7 +357,64 @@ def _feature_plain_language(feature: Mapping[str, Any]) -> str:
         value_text = _safe_str(value, "unknown")
 
     direction = "increased" if isinstance(weight, (int, float)) and weight >= 0 else "decreased"
-    return f"{name}={value_text} {direction} the score."
+
+    if name == "breach_appearance_count":
+        if isinstance(value, (int, float)) and value > 0:
+            return f"Observed in {value_text} historical data breach(es), directly increasing credential exposure and compromise risk"
+        return "No historical data breach appearances discovered across leak databases"
+    elif name == "exposed_email_count":
+        return f"Discovered {value_text} publicly exposed email address(es), expanding the social engineering and phishing attack surface"
+    elif name == "open_ports_sensitive":
+        return f"Detected {value_text} sensitive open network port(s) or service(s), creating immediate network ingress attack vectors"
+    elif name == "subdomain_count":
+        return f"Mapped {value_text} active subdomain(s), increasing external infrastructure footprint and perimeter complexity"
+    elif name == "entity_count":
+        return f"Target reconnaissance discovered {value_text} unique external asset(s) across the perimeter"
+    elif name == "unknown_registrar":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "Domain registration details and registrar identity are masked or unknown, raising attribution opacity"
+        return "Domain registrar attribution is verified and transparent"
+    elif name == "recent_infrastructure_churn":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "High recent DNS or infrastructure churn detected, potentially indicating ephemeral hosting or evasive setup"
+        return "Infrastructure hosting and DNS records exhibit long-term stability"
+    elif name == "aws_infrastructure":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "Target utilizes cloud hosting infrastructure (AWS), requiring specialized IAM and cloud security review"
+        return "Target does not rely on identified AWS cloud infrastructure"
+    elif name == "injection_attempt_detected":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "CRITICAL: Prompt injection or active adversarial payload detected within reconnaissance input data"
+        return "No adversarial prompt injection patterns detected"
+    elif name == "domain_age_days":
+        try:
+            days = float(value)
+            years = days / 365.25
+            return f"Domain has been registered for {value_text} days (~{years:.1f} years), indicating established historical reputation and stability"
+        except (ValueError, TypeError):
+            return f"Domain age is recorded at {value_text} days, contributing to domain reputation evaluation"
+    elif name == "privacy_registrar_used":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "WHOIS privacy protection is enabled on the domain registrar, obscuring administrative ownership details"
+        return "Domain registration contact information is publicly listed"
+    elif name == "cloudflare_proxied":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "External web traffic is proxied through Cloudflare CDN/WAF, filtering edge attacks and obscuring origin IP addresses"
+        return "Target infrastructure endpoints are directly exposed without CDN proxying"
+    elif name == "ipv6_enabled":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "IPv6 networking capabilities are active on target endpoints, requiring dual-stack firewall validation"
+        return "Target networking is currently restricted to IPv4 endpoints"
+    elif name == "deliberate_test_target":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "Target is identified as a known security testbed or demonstration domain (e.g., scanme.nmap.org)"
+        return "Target is evaluated as a standard production organization domain"
+
+    readable_name = name.replace("_", " ").title()
+    if isinstance(weight, (int, float)) and weight != 0:
+        return f"{readable_name} (value={value_text}) {direction} the score"
+    return f"{name}={value_text} {direction} the score"
+
 
 
 # ---------------------------------------------------------------------------
@@ -563,42 +629,73 @@ class ExplaboxBackend:
 
 
 def _predict_score(dossier: Mapping[str, Any]) -> int:
-    """Derive a score from the dossier using Mind's feature-weight model when available."""
-    if _MIND_SCORING_AVAILABLE:
-        feature_vector = extract_feature_vector(dossier)
-        if feature_vector:
-            return _clip_score(score_from_features(feature_vector, dossier))
+    """Derive a score from the dossier using DeterministicScorer.
 
-    base = float(dossier.get("risk_score", 0) or 0)
+    Always uses the deterministic scoring engine. Never falls back to the
+    dossier's declared risk_score, which would make fairness/robustness
+    perturbations vacuous.
+    """
+    if _MIND_SCORING_AVAILABLE:
+        risk_features = [
+            dict(f) for f in dossier.get("risk_features", [])
+            if isinstance(f, Mapping)
+        ]
+        result = _default_scorer.score(risk_features, score_mode="REAL")
+        return result.risk_score
+
+    # Fallback only if mind_profile is not importable (should not happen in production)
     features = dossier.get("risk_features", []) or []
-    contribution = 0.0
+    total = 15.0  # default intercept
     for feature in features:
         if isinstance(feature, Mapping):
             weight = feature.get("weight", 0)
             value = feature.get("value", 0)
-            if isinstance(weight, (int, float)):
-                if isinstance(value, (int, float)):
-                    contribution += float(weight) * float(value)
-                else:
-                    contribution += float(weight) * 1.0
-    return _clip_score(base + contribution * 10)
+            try:
+                norm = float(value)
+                w = float(weight)
+            except (TypeError, ValueError):
+                continue
+            total += norm * w
+    return _clip_score(total)
 
 
 def _top_features(dossier: Mapping[str, Any], limit: int = 5) -> List[JSONDict]:
-    """Extract the top risk features sorted by absolute weight."""
+    """Extract the top risk features sorted by absolute contribution.
+
+    Ranks by abs(normalized_value × weight), i.e. actual score contribution,
+    not just abs(weight). A high-weight feature with near-zero normalized value
+    should not rank above a lower-weight feature that moves the score more.
+    """
     features = dossier.get("risk_features", []) or []
     scored: List[Tuple[float, JSONDict]] = []
     for feature in features:
         if not isinstance(feature, Mapping):
             continue
         weight = float(feature.get("weight", 0) or 0)
+        raw_value = feature.get("value", 0)
+        try:
+            raw_value_f = float(raw_value)
+        except (TypeError, ValueError):
+            raw_value_f = 0.0
+
+        # Use pre-computed contribution_points if available, else compute
+        contribution = feature.get("contribution_points")
+        if contribution is None and _MIND_SCORING_AVAILABLE:
+            norm_val = normalise_value(
+                _safe_str(feature.get("feature"), ""), raw_value_f
+            )
+            contribution = norm_val * weight
+        elif contribution is None:
+            contribution = raw_value_f * weight
+
         scored.append(
             (
-                abs(weight),
+                abs(float(contribution)),
                 {
                     "feature": _safe_str(feature.get("feature"), "unknown_feature"),
                     "value": feature.get("value"),
                     "weight": weight,
+                    "contribution_points": round(float(contribution), 4),
                     "plain_language": _feature_plain_language(feature),
                 },
             )
@@ -630,41 +727,53 @@ def _frequency_map(values: Sequence[str]) -> JSONDict:
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
-# ---------------------------------------------------------------------------
-# Fairness analysis (synthetic perturbation testing)
-# ---------------------------------------------------------------------------
-
+_FAIRNESS_IDENTITY_REPLACEMENTS = [
+    ("corp", "llc"),
+    ("inc", "gmbh"),
+    ("company", "organization"),
+    ("individual", "entity"),
+    ("admin", "user"),
+]
 
 _FAIRNESS_REGION_MAP = {
-    "India": "Singapore",
-    "US": "UK",
-    "United States": "United Kingdom",
-    "Germany": "Canada",
-    "Russia": "Brazil",
-    "China": "Japan",
-    "Australia": "New Zealand",
+    "us": "eu",
+    "na": "emea",
+    "america": "europe",
+    "california": "germany",
+    "west": "east",
 }
 
-_FAIRNESS_IDENTITY_REPLACEMENTS = [
-    ("John", "Alex"),
-    ("Jane", "Jordan"),
-    ("John Doe", "Alex Roe"),
-    ("admin", "sysadmin"),
+_FAIRNESS_DOMAIN_REPLACEMENTS = [
+    (".com", ".org"),
+    (".net", ".io"),
+    ("example", "test"),
+    ("domain", "site"),
 ]
 
-_FAIRNESS_DOMAIN_REPLACEMENTS = [
-    ("example.com", "test-site.org"),
-    ("google.com", "search-engine.net"),
-    ("github.com", "code-host.dev"),
-]
+
+# Feature sets associated with each fairness variant — perturbation must
+# also alter these features so the deterministic scorer produces a different score.
+_FAIRNESS_FEATURE_MAP = {
+    "identity": ["exposed_email_count", "breach_appearance_count"],
+    "geo_temporal": ["unknown_registrar", "privacy_registrar_used"],
+    "domain": ["domain_age_days", "subdomain_count", "unknown_registrar"],
+}
 
 
 def _perturb_fairness(dossier: MutableMapping[str, Any], variant: str) -> MutableMapping[str, Any]:
-    """Apply a single fairness perturbation to a dossier copy."""
+    """Apply a single fairness perturbation to a dossier copy.
+
+    CRITICAL FIX: Also perturbs risk_features associated with the variant
+    so the deterministic scorer produces a different score. Without this,
+    changing only profile text has zero effect on the score.
+    """
     perturbed = copy.deepcopy(dict(dossier))
     profile = perturbed.get("profile", {})
     if not isinstance(profile, MutableMapping):
-        return perturbed
+        profile = {}
+        perturbed["profile"] = profile
+
+    changed_fields: List[str] = []
 
     if variant == "identity":
         current = _safe_str(profile.get("identity"), "")
@@ -674,6 +783,7 @@ def _perturb_fairness(dossier: MutableMapping[str, Any], variant: str) -> Mutabl
         if current == _safe_str(profile.get("identity"), ""):
             current = "[altered-identity]"
         profile["identity"] = current
+        changed_fields.append("profile.identity")
     elif variant == "geo_temporal":
         current = _safe_str(profile.get("geo_temporal"), "")
         for old, new in _FAIRNESS_REGION_MAP.items():
@@ -682,6 +792,7 @@ def _perturb_fairness(dossier: MutableMapping[str, Any], variant: str) -> Mutabl
         if current == _safe_str(profile.get("geo_temporal"), ""):
             current = "[altered-geo-temporal]"
         profile["geo_temporal"] = current
+        changed_fields.append("profile.geo_temporal")
     elif variant == "domain":
         current = _safe_str(perturbed.get("target"), "")
         for old, new in _FAIRNESS_DOMAIN_REPLACEMENTS:
@@ -690,39 +801,76 @@ def _perturb_fairness(dossier: MutableMapping[str, Any], variant: str) -> Mutabl
         if current == _safe_str(perturbed.get("target"), ""):
             current = "[altered-domain]"
         perturbed["target"] = current
+        changed_fields.append("target")
+
+    # CRITICAL: Also perturb associated risk_features so scoring changes
+    features_to_zero = _FAIRNESS_FEATURE_MAP.get(variant, [])
+    risk_features = perturbed.get("risk_features", [])
+    if isinstance(risk_features, list):
+        for feat in risk_features:
+            if isinstance(feat, MutableMapping) and feat.get("feature") in features_to_zero:
+                feat["value"] = 0
+                if "contribution_points" in feat:
+                    feat["contribution_points"] = 0.0
+                if "normalized_value" in feat:
+                    feat["normalized_value"] = 0.0
+                changed_fields.append(f"risk_features.{feat['feature']}")
 
     perturbed["profile"] = profile
+    perturbed["_fairness_changed_fields"] = changed_fields
     return perturbed
 
 
 def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DEFAULT_FAIRNESS_THRESHOLD) -> JSONDict:
-    """Synthetic fairness check by perturbing identity, geo, and domain fields."""
+    """Paired sensitivity test by perturbing identity, geo, and domain fields.
+
+    Each perturbation modifies both profile text AND associated risk_features,
+    then re-scores through the deterministic scorer. This ensures the test
+    actually measures whether protected attributes affect the decision.
+
+    NOTE: This is a 'paired sensitivity test', not a 'statistical fairness audit'.
+    Three handcrafted variants cannot establish statistical significance.
+    """
     variants = ("identity", "geo_temporal", "domain")
 
     if not dossiers:
         return {
             "passed": True,
+            "test_type": "paired_sensitivity_test",
             "notes": ["No dossiers supplied."],
             "max_score_delta": 0,
             "avg_score_delta": 0,
             "threshold": threshold,
             "flagged": False,
             "evaluated_variants": 0,
+            "variant_details": [],
         }
 
     deltas: List[float] = []
     notes: List[str] = []
+    variant_details: List[JSONDict] = []
 
     for dossier in dossiers:
         if not isinstance(dossier, Mapping):
             continue
         base_score = _predict_score(dossier)
+        base_level = _risk_level(base_score)
         for variant in variants:
             perturbed = _perturb_fairness(dict(dossier), variant)
             pert_score = _predict_score(perturbed)
             delta = abs(base_score - pert_score)
+            decision_changed = _risk_level(pert_score) != base_level
+            changed_fields = perturbed.get("_fairness_changed_fields", [])
             deltas.append(delta)
-            notes.append(f"{variant}: \u0394={delta:.2f}")
+            notes.append(f"{variant}: Δ={delta:.2f}")
+            variant_details.append({
+                "variant": variant,
+                "original_score": base_score,
+                "perturbed_score": pert_score,
+                "delta": round(delta, 4),
+                "decision_changed": decision_changed,
+                "fields_changed": changed_fields,
+            })
 
     max_delta = max(deltas) if deltas else 0
     avg_delta = _mean_or_zero(deltas)
@@ -731,12 +879,14 @@ def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DE
 
     return {
         "passed": passed,
+        "test_type": "paired_sensitivity_test",
         "notes": notes[:10],
         "max_score_delta": round(max_delta, 4),
         "avg_score_delta": round(avg_delta, 4),
         "threshold": threshold,
         "flagged": flagged,
         "evaluated_variants": len(deltas),
+        "variant_details": variant_details[:15],
     }
 
 
@@ -782,7 +932,13 @@ def _perturb_robustness(dossier: MutableMapping[str, Any], variant: str) -> Muta
 
 
 def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DEFAULT_ROBUSTNESS_THRESHOLD) -> JSONDict:
-    """Test score stability under structural perturbations."""
+    """Test score stability under structural perturbations.
+
+    Compound pass criteria (ALL must hold):
+    - max score delta <= threshold
+    - no risk-level flip (decision_flipped == False)
+    - feature_stability >= 0.5 (top-k Jaccard)
+    """
     if not dossiers:
         return {
             "passed": True,
@@ -798,15 +954,12 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
     deltas: List[float] = []
     notes: List[str] = []
     any_decision_flip = False
-    base_top_features_all: List[List[str]] = []
 
     for dossier in dossiers:
         if not isinstance(dossier, Mapping):
             continue
         base_score = _predict_score(dossier)
         base_features = dossier.get("risk_features", []) or []
-        base_top = [f.get("feature", "") for f in base_features if isinstance(f, Mapping)][:5]
-        base_top_features_all.append(base_top)
         base_level = _risk_level(base_score)
 
         structural_variants = (
@@ -820,10 +973,13 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
             perturbed = _perturb_robustness(dict(dossier), variant)
             pert_score = _predict_score(perturbed)
             delta = abs(base_score - pert_score)
+            pert_level = _risk_level(pert_score)
+            if pert_level != base_level:
+                any_decision_flip = True
             deltas.append(delta)
-            notes.append(f"{variant}: \u0394={delta:.2f}")
+            notes.append(f"{variant}: Δ={delta:.2f}")
 
-        # Perturbation: remove each feature one at a time
+        # Perturbation: remove each feature one at a time (deletion fidelity)
         for idx, feature in enumerate(base_features):
             if not isinstance(feature, Mapping):
                 continue
@@ -833,16 +989,22 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
             ]
             pert_score = _predict_score(perturbed)
             delta = abs(base_score - pert_score)
+            pert_level = _risk_level(pert_score)
+            if pert_level != base_level:
+                any_decision_flip = True
             deltas.append(delta)
-            notes.append(f"remove_feature[{_safe_str(feature.get('feature'), '?')}]: \u0394={delta:.2f}")
+            notes.append(f"remove_feature[{_safe_str(feature.get('feature'), '?')}]: Δ={delta:.2f}")
 
         # Perturbation: empty risk_features
         perturbed = copy.deepcopy(dict(dossier))
         perturbed["risk_features"] = []
         pert_score = _predict_score(perturbed)
         delta = abs(base_score - pert_score)
+        pert_level = _risk_level(pert_score)
+        if pert_level != base_level:
+            any_decision_flip = True
         deltas.append(delta)
-        notes.append(f"empty_features: \u0394={delta:.2f}")
+        notes.append(f"empty_features: Δ={delta:.2f}")
 
         # Perturbation: zero out all weights
         perturbed = copy.deepcopy(dict(dossier))
@@ -852,30 +1014,24 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
         pert_score = _predict_score(perturbed)
         delta = abs(base_score - pert_score)
         deltas.append(delta)
-        notes.append(f"zero_weights: \u0394={delta:.2f}")
+        notes.append(f"zero_weights: Δ={delta:.2f}")
 
-        # Perturbation: small score perturbations
-        for offset in (-5, -1, 1, 5):
-            perturbed = copy.deepcopy(dict(dossier))
-            perturbed["risk_score"] = max(0, min(100, base_score + offset))
-            pert_score = _predict_score(perturbed)
-            pert_level = _risk_level(pert_score)
-            if pert_level != base_level:
-                any_decision_flip = True
-            delta = abs(base_score - pert_score)
-            deltas.append(delta)
-            notes.append(f"score_offset_{offset:+d}: \u0394={delta:.2f}")
-
-    # Feature stability: fraction of top features retained after single-feature removal
-    stable_counts: List[float] = []
+    # Feature stability: top-k Jaccard similarity between base and perturbed rankings
+    # For each feature deletion, compute top-k features of perturbed dossier and
+    # compare with base top-k features using Jaccard similarity.
+    stability_scores: List[float] = []
     for dossier in dossiers:
         if not isinstance(dossier, Mapping):
             continue
         base_features = dossier.get("risk_features", []) or []
-        if not base_features:
-            stable_counts.append(1.0)
+        base_top_feats = _top_features(dossier, limit=5)
+        base_top_names = {f.get("feature", "") for f in base_top_feats}
+
+        if not base_features or not base_top_names:
+            stability_scores.append(1.0)
             continue
-        retained = 0
+
+        jaccard_vals: List[float] = []
         for idx, feature in enumerate(base_features):
             if not isinstance(feature, Mapping):
                 continue
@@ -883,20 +1039,27 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
             perturbed["risk_features"] = [
                 f for i, f in enumerate(base_features) if i != idx and isinstance(f, Mapping)
             ]
-            feat_name = _safe_str(feature.get("feature"), "")
-            new_names = {
-                _safe_str(f.get("feature"), "")
-                for f in perturbed.get("risk_features", []) if isinstance(f, Mapping)
-            }
-            if feat_name in new_names or len(new_names) >= max(len(base_features) - 1, 1):
-                retained += 1
-        stable_counts.append(retained / len(base_features))
+            pert_top_feats = _top_features(perturbed, limit=5)
+            pert_top_names = {f.get("feature", "") for f in pert_top_feats}
 
-    feature_stability = _mean_or_zero(stable_counts) if stable_counts else 1.0
+            # Jaccard similarity
+            intersection = base_top_names & pert_top_names
+            union = base_top_names | pert_top_names
+            jaccard = len(intersection) / len(union) if union else 1.0
+            jaccard_vals.append(jaccard)
+
+        stability_scores.append(_mean_or_zero(jaccard_vals) if jaccard_vals else 1.0)
+
+    feature_stability = _mean_or_zero(stability_scores) if stability_scores else 1.0
 
     max_delta = max(deltas) if deltas else 0
     avg_delta = _mean_or_zero(deltas)
-    passed = max_delta <= threshold
+
+    # COMPOUND PASS CRITERIA — all must hold
+    delta_ok = max_delta <= threshold
+    no_flip = not any_decision_flip
+    stability_ok = feature_stability >= 0.5
+    passed = delta_ok and no_flip and stability_ok
 
     return {
         "passed": passed,
@@ -907,6 +1070,11 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
         "decision_flipped": any_decision_flip,
         "feature_stability": round(feature_stability, 4),
         "evaluated_variants": len(deltas),
+        "pass_criteria": {
+            "delta_ok": delta_ok,
+            "no_decision_flip": no_flip,
+            "stability_ok": stability_ok,
+        },
     }
 
 

@@ -1,7 +1,10 @@
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sense_clean import generate_raw_scan
@@ -14,10 +17,7 @@ from schema_validation import (
 from explanation_card_build import BuildConfig, build_artifacts, write_outputs
 from graph_build import build_graph, render_graph
 
-_MIND_DIR = Path(__file__).resolve().parent / "mind"
-if str(_MIND_DIR) not in sys.path:
-    sys.path.insert(0, str(_MIND_DIR))
-from mind_profile import profile  # noqa: E402
+from mind.mind_profile import profile  # noqa: E402
 
 
 class PipelineError(Exception):
@@ -101,10 +101,13 @@ def pipeline_from_existing_scan(
     do_export_misp=False,
     mind_dry_run=True,
     skip_graph=False,
+    do_export_dashboard=False,
 ):
     """Run Sense → Mind → Web → Conscience → Report."""
     check_ethics_gate()
     output_dir = ensure_dir(output_dir)
+    run_id = str(uuid.uuid4())
+    run_timestamp = datetime.now(timezone.utc).isoformat()
 
     raw_scan = generate_raw_scan(
         target,
@@ -178,6 +181,30 @@ def pipeline_from_existing_scan(
         actual_misp_path = export_misp(report, misp_path)
         results["misp_export"] = str(actual_misp_path)
 
+    # Compute artifact hashes for lineage
+    artifact_hashes = {}
+    for name, filepath in results.items():
+        fp = Path(filepath)
+        if fp.exists() and fp.is_file():
+            artifact_hashes[fp.name] = hashlib.sha256(fp.read_bytes()).hexdigest()
+
+    lineage = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "generated_at": run_timestamp,
+        "model_metadata": dossier.get("model_metadata", {}),
+        "artifact_hashes": artifact_hashes,
+    }
+    lineage_path = output_dir / "lineage.json"
+    save_json(lineage, lineage_path)
+    results["lineage"] = str(lineage_path)
+
+    if do_export_dashboard:
+        from xai_dashboard import generate_dashboard_html
+        dashboard_path = output_dir / "xai_dashboard.html"
+        generate_dashboard_html(raw_scan, dossier, explanation_cards, report, lineage, dashboard_path)
+        results["xai_dashboard"] = str(dashboard_path)
+
     return results
 
 
@@ -188,6 +215,7 @@ def pipeline_with_spiderfoot(
     do_export_misp=False,
     mind_dry_run=True,
     skip_graph=False,
+    do_export_dashboard=False,
     modules=None,
     use_case=None,
 ):
@@ -210,6 +238,7 @@ def pipeline_with_spiderfoot(
         do_export_misp,
         mind_dry_run,
         skip_graph,
+        do_export_dashboard,
     )
 
 
@@ -248,6 +277,12 @@ def main():
     )
 
     parser.add_argument(
+        "--export-dashboard",
+        action="store_true",
+        help="Generate standalone XAI Analyst HTML Dashboard"
+    )
+
+    parser.add_argument(
         "--mind-live",
         action="store_true",
         help="Call a real LLM for Stage 2 (default: dry-run stub dossier)",
@@ -281,6 +316,7 @@ def main():
                 args.export_misp,
                 mind_dry_run=not args.mind_live,
                 skip_graph=args.skip_graph,
+                do_export_dashboard=args.export_dashboard,
             )
         else:
             results = pipeline_with_spiderfoot(
@@ -290,6 +326,7 @@ def main():
                 args.export_misp,
                 mind_dry_run=not args.mind_live,
                 skip_graph=args.skip_graph,
+                do_export_dashboard=args.export_dashboard,
                 modules=args.modules,
                 use_case=args.use_case,
             )
@@ -305,6 +342,10 @@ def main():
             print(f"PDF               : {results.get('pdf_report')}")
         if "misp_export" in results:
             print(f"MISP              : {results.get('misp_export')}")
+        if "lineage" in results:
+            print(f"Lineage Manifest  : {results.get('lineage')}")
+        if "xai_dashboard" in results:
+            print(f"XAI Dashboard     : {results.get('xai_dashboard')}")
 
     except PipelineError as e:
         print(

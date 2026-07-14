@@ -581,7 +581,7 @@ class TestEdgeCases:
     def test_empty_entities_handled_in_stub(self):
         scan = {"target": "empty.com", "entities": [], "events": []}
         stub = _stub_dossier("empty.com", scan)
-        assert stub["risk_score"] == 0
+        assert stub["risk_score"] == 15
 
     def test_no_events_produces_insufficient_data_in_stub(self):
         scan = {"target": "noevents.com", "entities": [{"type": "ip", "value": "1.2.3.4"}], "events": []}

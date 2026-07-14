@@ -29,6 +29,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
 
 # ── optional heavy deps — fail gracefully so unit tests can import without them
 
@@ -417,9 +418,13 @@ def enrich_dossier(
     injection_detected: bool,
     injection_detail: Optional[str],
 ) -> Dict[str, Any]:
-    """Add metadata fields that the LLM doesn't produce."""
+    """Add metadata fields that the LLM doesn't produce.
+
+    CRITICAL: Re-scores using DeterministicScorer to override any LLM-generated
+    risk_score. The LLM extracts evidence and features; the deterministic engine
+    is the sole authority for the final score.
+    """
     data.setdefault("schema_version", "1.0")
-    data["risk_level"] = _risk_level(int(data["risk_score"]))
     data["scan_date"] = scan.get("scan_date", "unknown")
     data["profiled_at"] = datetime.now(timezone.utc).isoformat()
     data["processing_time_seconds"] = round(time.time() - run_start, 2)
@@ -436,9 +441,40 @@ def enrich_dossier(
             data["risk_features"].append({
                 "feature": "injection_attempt_detected",
                 "value": 1,
-                "weight": 0.35,
+                "weight": DEFAULT_WEIGHTS.get("injection_attempt_detected", 15.0),
                 "plain_language": "Prompt-injection pattern detected in scan data — adversary may be attempting to manipulate analysis.",
             })
+
+    # ── DETERMINISTIC RE-SCORING ──
+    # Override the LLM's risk_score with the deterministic scorer output.
+    # The LLM extracts features; the scorer calculates the score.
+    is_dry_run = backend.name == "dry_run"
+    score_mode = "STUB" if is_dry_run else "REAL"
+    scoring = _default_scorer.score(data.get("risk_features", []), score_mode=score_mode)
+
+    data["risk_score"] = scoring.risk_score
+    data["risk_level"] = scoring.risk_level
+    data["score_mode"] = scoring.score_mode
+    data["scoring_metadata"] = scoring.to_dict()
+
+    # Update risk_features with normalized values and contribution points
+    updated_features = []
+    for c in scoring.contributions:
+        # Find the original feature dict to preserve plain_language from LLM
+        original = next(
+            (f for f in data.get("risk_features", [])
+             if isinstance(f, dict) and f.get("feature") == c.feature),
+            {},
+        )
+        updated_features.append({
+            "feature": c.feature,
+            "value": c.raw_value,
+            "weight": c.weight,
+            "normalized_value": round(c.normalized_value, 6),
+            "contribution_points": round(c.contribution_points, 4),
+            "plain_language": original.get("plain_language", c.plain_language),
+        })
+    data["risk_features"] = updated_features
 
     data["model_metadata"] = {
         **backend.metadata(),
@@ -548,8 +584,24 @@ def profile(
 # ---------------------------------------------------------------------------
 
 def _stub_dossier(target: str, scan: Dict[str, Any]) -> Dict[str, Any]:
-    """Produce a structurally valid dossier without calling an LLM — for testing."""
+    """Produce a structurally valid dossier without calling an LLM — for testing.
+
+    Uses the DeterministicScorer to compute risk_score from features,
+    ensuring the stub score is exactly reconstructable from its contributions.
+    """
     entity_count = len(scan.get("entities", []))
+    risk_features = [
+        {
+            "feature": "entity_count",
+            "value": entity_count,
+            "weight": DEFAULT_WEIGHTS.get("entity_count", 2.0),
+            "plain_language": f"Target has {entity_count} discovered entities.",
+        }
+    ]
+
+    # Score deterministically from features
+    scoring = _default_scorer.score(risk_features, score_mode="STUB")
+
     return {
         "target": target,
         "schema_version": "1.0",
@@ -564,21 +616,27 @@ def _stub_dossier(target: str, scan: Dict[str, Any]) -> Dict[str, Any]:
                 "extraversion": 0.5,
                 "agreeableness": 0.5,
                 "neuroticism": 0.5,
-                "rationale": "All dimensions set to neutral (0.5) in stub mode.",
+                "rationale": "All dimensions set to neutral (0.5) in stub mode. "
+                             "OCEAN scores are excluded from risk scoring.",
             },
             "technical_stack": ["unknown"],
             "ideology": None,
             "opsec_posture": "Unable to assess OpSec posture in stub mode.",
         },
-        "risk_score": min(entity_count * 2, 30),
-        "risk_level": "LOW",
+        "risk_score": scoring.risk_score,
+        "risk_level": scoring.risk_level,
+        "score_mode": scoring.score_mode,
+        "scoring_metadata": scoring.to_dict(),
         "risk_features": [
             {
-                "feature": "entity_count",
-                "value": entity_count,
-                "weight": 0.02,
-                "plain_language": f"Target has {entity_count} discovered entities.",
+                "feature": c.feature,
+                "value": c.raw_value,
+                "weight": c.weight,
+                "normalized_value": round(c.normalized_value, 6),
+                "contribution_points": round(c.contribution_points, 4),
+                "plain_language": c.plain_language,
             }
+            for c in scoring.contributions
         ],
         "insufficient_data_flags": [
             {
@@ -644,6 +702,193 @@ FEATURE_BOUNDS: Dict[str, tuple[float, float]] = {
 _BOUNDS_FALLBACK: tuple[float, float] = (0.0, 1.0)
 
 
+# ---------------------------------------------------------------------------
+# 8b. Deterministic Scoring Engine
+#
+# The single source of truth for risk_score computation.
+# The LLM extracts evidence; this engine calculates the score.
+# Invariant: intercept + sum(contribution_points) == risk_score (within ±0.01)
+# ---------------------------------------------------------------------------
+
+# Default signed weights — positive means "increases risk", negative means "mitigates".
+DEFAULT_WEIGHTS: Dict[str, float] = {
+    "breach_appearance_count":      12.0,
+    "exposed_email_count":           8.0,
+    "open_ports_sensitive":         10.0,
+    "subdomain_count":               3.0,
+    "unknown_registrar":             6.0,
+    "recent_infrastructure_churn":   7.0,
+    "aws_infrastructure":            2.0,
+    "injection_attempt_detected":   15.0,
+    "deliberate_test_target":       -8.0,
+    "entity_count":                  2.0,
+    "domain_age_days":              -5.0,
+    "privacy_registrar_used":       -3.0,
+    "cloudflare_proxied":           -4.0,
+    "ipv6_enabled":                 -1.0,
+}
+
+DEFAULT_INTERCEPT: float = 15.0
+SCORER_VERSION: str = "1.0.0"
+
+# Minimum number of features required for a confident score.
+MIN_EVIDENCE_FEATURES: int = 2
+
+
+@dataclass
+class FeatureContribution:
+    """One feature's exact contribution to the risk score."""
+    feature: str
+    raw_value: float
+    normalized_value: float
+    weight: float
+    contribution_points: float  # = normalized_value * weight
+    plain_language: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "feature": self.feature,
+            "raw_value": self.raw_value,
+            "normalized_value": round(self.normalized_value, 6),
+            "weight": self.weight,
+            "contribution_points": round(self.contribution_points, 4),
+            "plain_language": self.plain_language,
+        }
+
+
+@dataclass
+class ScoringResult:
+    """Complete deterministic scoring output with full audit trail."""
+    risk_score: int           # Final clamped integer score [0, 100]
+    risk_score_raw: float     # Pre-clamp float
+    risk_level: str
+    intercept: float
+    contributions: list       # List[FeatureContribution]
+    scorer_version: str
+    evidence_sufficiency: float  # 0.0–1.0, fraction of known features present
+    score_mode: str           # "REAL" | "STUB" | "FALLBACK"
+    abstain: bool             # True if evidence is insufficient
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "risk_score": self.risk_score,
+            "risk_score_raw": round(self.risk_score_raw, 4),
+            "risk_level": self.risk_level,
+            "intercept": self.intercept,
+            "scorer_version": self.scorer_version,
+            "evidence_sufficiency": round(self.evidence_sufficiency, 4),
+            "score_mode": self.score_mode,
+            "abstain": self.abstain,
+            "contributions": [c.to_dict() for c in self.contributions],
+            "reconstruction_check": {
+                "intercept": self.intercept,
+                "sum_contributions": round(sum(c.contribution_points for c in self.contributions), 4),
+                "total_raw": round(self.risk_score_raw, 4),
+                "total_clamped": self.risk_score,
+            },
+        }
+
+
+class DeterministicScorer:
+    """
+    Deterministic, versioned scoring engine.
+
+    The LLM extracts structured evidence and risk_features.
+    This engine is the SOLE AUTHORITY for calculating risk_score.
+    No LLM may independently generate or override the final score.
+
+    Invariant:
+        intercept + sum(normalized_value * weight for each feature) == risk_score_raw
+        risk_score = clamp(round(risk_score_raw), 0, 100)
+    """
+
+    def __init__(
+        self,
+        weights: Optional[Dict[str, float]] = None,
+        intercept: float = DEFAULT_INTERCEPT,
+    ):
+        self.weights = weights or dict(DEFAULT_WEIGHTS)
+        self.intercept = intercept
+        self.version = SCORER_VERSION
+
+    def score(
+        self,
+        risk_features: List[Dict[str, Any]],
+        score_mode: str = "REAL",
+    ) -> ScoringResult:
+        """
+        Calculate risk_score deterministically from risk_features.
+
+        Each feature's contribution = normalise(raw_value) * weight.
+        Total = intercept + sum(contributions).
+
+        Returns ScoringResult with full audit trail.
+        """
+        contributions: list = []
+        known_features_present = 0
+
+        for feat in risk_features:
+            if not isinstance(feat, dict):
+                continue
+            name = feat.get("feature", "")
+            raw_val = feat.get("value", 0)
+            try:
+                raw_val = float(raw_val)
+            except (TypeError, ValueError):
+                raw_val = 0.0
+
+            # Use the feature's own weight if present, else default
+            weight = self.weights.get(name)
+            if weight is None:
+                feat_weight = feat.get("weight", 0)
+                try:
+                    weight = float(feat_weight)
+                except (TypeError, ValueError):
+                    weight = 0.0
+
+            if name in self.weights:
+                known_features_present += 1
+
+            norm_val = normalise_value(name, raw_val)
+            contribution_points = norm_val * weight
+            plain = feat.get("plain_language", f"{name}={raw_val}")
+
+            contributions.append(FeatureContribution(
+                feature=name,
+                raw_value=raw_val,
+                normalized_value=norm_val,
+                weight=weight,
+                contribution_points=contribution_points,
+                plain_language=plain,
+            ))
+
+        total_contribution = sum(c.contribution_points for c in contributions)
+        risk_score_raw = self.intercept + total_contribution
+        risk_score = max(0, min(100, round(risk_score_raw)))
+
+        # Evidence sufficiency: what fraction of known scorable features are present
+        total_known = len(self.weights)
+        evidence_sufficiency = known_features_present / total_known if total_known > 0 else 0.0
+        abstain = (known_features_present < MIN_EVIDENCE_FEATURES
+                   and score_mode != "STUB")
+
+        return ScoringResult(
+            risk_score=risk_score,
+            risk_score_raw=risk_score_raw,
+            risk_level=_risk_level(risk_score),
+            intercept=self.intercept,
+            contributions=contributions,
+            scorer_version=self.version,
+            evidence_sufficiency=evidence_sufficiency,
+            score_mode=score_mode,
+            abstain=abstain,
+        )
+
+
+# Module-level default scorer instance
+_default_scorer = DeterministicScorer()
+
+
 def normalise_value(feature: str, raw_value: float) -> float:
     """
     Min-Max normalise a single feature value to [0, 1] using FEATURE_BOUNDS.
@@ -682,22 +927,30 @@ def extract_feature_vector(dossier: Dict[str, Any]) -> Dict[str, float]:
 
 def score_from_features(feature_vector: Dict[str, float], dossier: Dict[str, Any]) -> float:
     """
-    Re-derive risk_score from a RAW feature_vector using weights in dossier.
-    Each feature is normalised to [0, 1] before weighting so that features
-    on different scales (e.g. domain_age_days vs binary flags) contribute
-    proportionally to their intended weight, not their raw magnitude.
+    Re-derive risk_score from a RAW feature_vector using DeterministicScorer.
 
-    Formula: score = clamp(sum(normalise(v) * w for v, w in features) * 100, 0, 100)
+    Delegates to the same deterministic engine used by enrich_dossier(),
+    ensuring exact score reconstruction.
 
-    Returns a float in [0, 100]. Used by Explabox to verify attribution.
+    Returns a float in [0, 100].
     """
+    # Reconstruct risk_features list from feature_vector + dossier weights
+    risk_features = []
     weight_map = {
-        f["feature"]: f["weight"]
+        f["feature"]: f.get("weight", DEFAULT_WEIGHTS.get(f["feature"], 0))
         for f in dossier.get("risk_features", [])
+        if isinstance(f, dict)
     }
-    normalised = normalise_feature_vector(feature_vector)
-    raw = sum(normalised.get(feat, 0.0) * w for feat, w in weight_map.items())
-    return max(0.0, min(100.0, raw * 100))
+    for feat_name, raw_val in feature_vector.items():
+        weight = weight_map.get(feat_name, DEFAULT_WEIGHTS.get(feat_name, 0))
+        risk_features.append({
+            "feature": feat_name,
+            "value": raw_val,
+            "weight": weight,
+        })
+
+    result = _default_scorer.score(risk_features, score_mode="REAL")
+    return float(result.risk_score)
 
 
 def build_explabox_dataset(dossier_paths: List[str | Path]) -> List[Dict[str, Any]]:

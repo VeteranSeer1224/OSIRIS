@@ -1,4 +1,6 @@
 import csv
+import hashlib
+import ipaddress
 import json
 import re
 from datetime import datetime, timezone
@@ -99,8 +101,15 @@ def clean_entity_value(entity_type: str, value: str):
         return m.group(0).lower() if m else None
 
     if entity_type == "ip":
-        m = IPV4_RE.search(value)
-        return m.group(0) if m else None
+        # Check if value or any extracted token is a valid IPv4 or IPv6 address using ipaddress module
+        for token in value.split():
+            token = token.strip("()[],;\"'")
+            try:
+                ip_obj = ipaddress.ip_address(token)
+                return str(ip_obj)
+            except ValueError:
+                pass
+        return None
 
     if entity_type == "social_profile":
         return value
@@ -121,10 +130,8 @@ def get_osiris_type(sf_type):
 
 
 def normalize_entities(raw_data):
-    entities = []
+    entities_map = {}
     unknown_entities = []
-
-    seen = set()
 
     for item in raw_data:
         sf_type = item.get("type", "")
@@ -139,31 +146,42 @@ def normalize_entities(raw_data):
         if osiris_type == "unknown":
             unknown_entities.append({
                 "module": item.get("module"),
-                "type": sf_type or sf_type_descr,
+                "type": sf_type or "unknown",
                 "value": sf_value,
                 "source": item.get("source")
             })
             continue
 
         key = (osiris_type, sf_value)
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-
-        entities.append({
-            "type": osiris_type,
-            "value": sf_value,
-            "source_module": item.get("module"),
+        sighting = {
+            "module": item.get("module"),
             "source": item.get("source"),
-            "platform": None,
-            "metadata": {
-                "source_module": item.get("module"),
-                "source": item.get("source")
-            }
-        })
+            "sf_type": sf_type,
+            "updated": item.get("updated"),
+        }
 
+        if key not in entities_map:
+            evidence_id = f"ev-{hashlib.sha256(f'{osiris_type}:{sf_value}'.encode('utf-8')).hexdigest()[:16]}"
+            entities_map[key] = {
+                "type": osiris_type,
+                "value": sf_value,
+                "source_module": item.get("module"),
+                "source": item.get("source"),
+                "platform": None,
+                "metadata": {
+                    "source_module": item.get("module"),
+                    "source": item.get("source"),
+                    "sightings_count": 1,
+                },
+                "evidence_id": evidence_id,
+                "evidence_sources": [sighting],
+            }
+        else:
+            # Aggregate sightings across multiple modules discovering the same entity
+            entities_map[key]["evidence_sources"].append(sighting)
+            entities_map[key]["metadata"]["sightings_count"] = len(entities_map[key]["evidence_sources"])
+
+    entities = list(entities_map.values())
     return entities, unknown_entities
 
 
@@ -254,7 +272,7 @@ def load_spiderfoot_input(path):
 
 
 def generate_raw_scan(target, spiderfoot_input):
-    if isinstance(spiderfoot_input, str):
+    if isinstance(spiderfoot_input, (str, Path)) or hasattr(spiderfoot_input, "__fspath__"):
         raw_data = load_spiderfoot_input(spiderfoot_input)
     else:
         raw_data = spiderfoot_input
@@ -268,7 +286,7 @@ def generate_raw_scan(target, spiderfoot_input):
 
     entities, unknown_entities = normalize_entities(raw_data)
 
-    from schema_validation import validate_raw_scan
+    from schema_validation import validate_raw_scan  # noqa: F811
 
     scan = {
         "target": target,

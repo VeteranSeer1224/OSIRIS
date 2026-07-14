@@ -142,7 +142,7 @@ def parse_social_host(value: str) -> Optional[str]:
         or val.startswith("{")
         or val.startswith("[")
         or val.startswith("('")
-        or val.startswith("('")
+        or val.startswith('["')
     ):
         return None
 
@@ -509,6 +509,15 @@ def timeline_html(timeline: List[Dict[str, Any]]) -> str:
     return '<ol class="timeline-list">' + "".join(items) + "</ol>"
 
 
+def _safe_json_embed(data: Any) -> str:
+    """Serialize data to JSON safe for embedding in HTML script blocks.
+
+    Replaces < with \\u003c to prevent script injection through OSINT values.
+    """
+    raw = json.dumps(data, ensure_ascii=False)
+    return raw.replace("<", "\\u003c").replace("</", "\\u003c/")
+
+
 def render_fallback_html(
     output_path: Path,
     graph: nx.DiGraph,
@@ -516,9 +525,22 @@ def render_fallback_html(
     title: str,
 ) -> None:
     nodes, edges = graph_to_vis_payload(graph)
-    nodes_json = json.dumps(nodes, ensure_ascii=False)
-    edges_json = json.dumps(edges, ensure_ascii=False)
+    nodes_json = _safe_json_embed(nodes)
+    edges_json = _safe_json_embed(edges)
     timeline_markup = timeline_html(timeline)
+
+    # Try to load vis-network.min.js for offline embedding
+    vis_js_path = Path(__file__).resolve().parent / "vendor" / "vis-network.min.js"
+    if vis_js_path.exists():
+        vis_script = f"<script>{vis_js_path.read_text(encoding='utf-8')}</script>"
+    else:
+        # Fallback: inline a minimal vis-network stub + warning
+        logging.warning(
+            "vendor/vis-network.min.js not found. Graph will require network "
+            "access to unpkg.com CDN. Run: mkdir -p vendor && curl -o vendor/vis-network.min.js "
+            "https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"
+        )
+        vis_script = '<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>'
 
     html_doc = f"""<!doctype html>
 <html lang="en">
@@ -526,7 +548,7 @@ def render_fallback_html(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{html.escape(title)}</title>
-  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  {vis_script}
   <style>
     :root {{ color-scheme: dark; }}
     body {{ margin: 0; font-family: Arial, sans-serif; background: #0b1020; color: #e5e7eb; }}
@@ -568,12 +590,16 @@ def render_fallback_html(
       </div>
     </aside>
   </div>
+  <script type="application/json" id="graph-nodes">{nodes_json}</script>
+  <script type="application/json" id="graph-edges">{edges_json}</script>
   <script>
-    const nodes = new vis.DataSet({nodes_json});
-    const edges = new vis.DataSet({edges_json});
-    const container = document.getElementById('network');
-    const data = {{ nodes, edges }};
-    const options = {{
+    var nodesData = JSON.parse(document.getElementById('graph-nodes').textContent);
+    var edgesData = JSON.parse(document.getElementById('graph-edges').textContent);
+    var nodes = new vis.DataSet(nodesData);
+    var edges = new vis.DataSet(edgesData);
+    var container = document.getElementById('network');
+    var data = {{ nodes: nodes, edges: edges }};
+    var options = {{
       physics: {{ stabilization: true, barnesHut: {{ gravitationalConstant: -25000, springLength: 120 }} }},
       interaction: {{ hover: true, navigationButtons: true, keyboard: true }},
       nodes: {{ font: {{ color: '#e5e7eb' }}, borderWidth: 1 }},
@@ -593,15 +619,15 @@ def render_pyvis_html(
     timeline: List[Dict[str, Any]],
     title: str,
 ) -> None:
-    net = Network(height="760px", width="100%", bgcolor="#0b1020", font_color="#e5e7eb", directed=True)
+    net = Network(height="760px", width="100%", bgcolor="#0b1020", font_color="#e5e7eb", directed=True, heading=title)
     net.toggle_physics(True)
     net.barnes_hut(gravity=-25000, spring_length=120, damping=0.15)
 
     for n_id, data in graph.nodes(data=True):
         net.add_node(
             n_id,
-            label=data.get("label", n_id),
-            title=data.get("title", n_id),
+            label=html.escape(str(data.get("label", n_id))),
+            title=html.escape(str(data.get("title", n_id))),
             color=data.get("color", ENTITY_COLORS.get(data.get("kind", "unknown"), ENTITY_COLORS["unknown"])),
             shape=data.get("shape", ENTITY_SHAPES.get(data.get("kind", "unknown"), ENTITY_SHAPES["unknown"])),
             group=data.get("group", data.get("kind", "unknown")),
@@ -610,18 +636,18 @@ def render_pyvis_html(
     for source, target, data in graph.edges(data=True):
         net.add_edge(source, target, label=data.get("label", ""), title=data.get("relation", ""), arrows="to")
 
-    net.set_options(
-        """
-        var options = {
-          interaction: { hover: true, navigationButtons: true, keyboard: true },
-          physics: { stabilization: true },
-          edges: { smooth: { type: 'dynamic' } },
-          nodes: { font: { color: '#e5e7eb' } }
-        }
-        """
-    )
+    net.set_options(json.dumps({
+        "interaction": {"hover": True, "navigationButtons": True, "keyboard": True},
+        "physics": {"stabilization": True},
+        "edges": {"smooth": {"type": "dynamic"}},
+        "nodes": {"font": {"color": "#e5e7eb"}},
+    }))
 
     html_content = net.generate_html(notebook=False)
+    if "<title>" not in html_content:
+        html_content = html_content.replace("<head>", f"<head>\n<title>{html.escape(title)}</title>")
+    if "<h1></h1>" in html_content:
+        html_content = html_content.replace("<h1></h1>", f"<h1>{html.escape(title)}</h1>")
     timeline_markup = timeline_html(timeline)
     if "</body>" in html_content:
         extra = f"""
@@ -656,6 +682,6 @@ def render_graph(
         try:
             render_pyvis_html(output_path, graph, timeline, title)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("PyVis rendering failed, falling back to HTML: %s", exc)
     render_fallback_html(output_path, graph, timeline, title)

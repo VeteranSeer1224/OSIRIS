@@ -31,7 +31,9 @@ RAW_SCAN_SCHEMA = {
                     "source_module": { "type": ["string", "null"] },
                     "source": { "type": ["string", "null"] },
                     "platform": { "type": ["string", "null"] },
-                    "metadata": { "type": ["object", "null"] }
+                    "metadata": { "type": ["object", "null"] },
+                    "evidence_id": { "type": ["string", "null"] },
+                    "evidence_sources": { "type": ["array", "null"] }
                 }
             }
         },
