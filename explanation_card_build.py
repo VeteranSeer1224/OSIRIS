@@ -231,31 +231,10 @@ def _format_contribution(weight: Any) -> str:
 
 
 def _feature_plain_language(feature: Mapping[str, Any]) -> str:
-    """Create a plain-language sentence from a risk feature.
+    """Create a plain-language sentence from a risk feature."""
+    from explabox_wrapper import _feature_plain_language as _ew_feature_plain_language
+    return _ew_feature_plain_language(feature)
 
-    Prefers the upstream plain_language field when available.
-    """
-    if feature.get("plain_language"):
-        return _safe_str(feature.get("plain_language"))
-
-    name = _safe_str(feature.get("feature"), "feature")
-    value = feature.get("value")
-    weight = feature.get("weight")
-
-    if isinstance(value, (int, float)):
-        value_text = str(value)
-    else:
-        value_text = _safe_str(value, "unknown")
-
-    if isinstance(weight, (int, float)):
-        if weight >= 0:
-            direction = "increased"
-        else:
-            direction = "decreased"
-    else:
-        direction = "affected"
-
-    return f"{name}={value_text} {direction} the score."
 
 
 

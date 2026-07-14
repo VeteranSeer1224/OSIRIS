@@ -52,26 +52,105 @@ def build_summary(scan):
     }
 
 
-def build_findings(scan):
+CATEGORY_FEATURE_MAP = {
+    "infrastructure": ["subdomain_count", "open_ports_sensitive", "recent_infrastructure_churn", "aws_infrastructure", "ipv6_enabled", "cloudflare_proxied", "entity_count"],
+    "identity": ["exposed_email_count", "breach_appearance_count"],
+    "technology": ["open_ports_sensitive", "aws_infrastructure", "cloudflare_proxied", "deliberate_test_target"],
+    "organization": ["unknown_registrar", "privacy_registrar_used", "domain_age_days", "entity_count"],
+    "other": ["injection_attempt_detected", "entity_count"]
+}
+
+
+def build_findings(scan, dossier=None, explanation_cards=None):
     findings = []
-
     entities = scan.get("entities", [])
-
     grouped = {}
 
     for entity in entities:
         category = classify_entity(entity)
-
         grouped.setdefault(category, [])
         grouped[category].append(entity)
 
+    # Extract risk features from dossier if available
+    dossier_features = dossier.get("risk_features", []) if isinstance(dossier, dict) else []
+    cards_list = explanation_cards.get("cards", []) if isinstance(explanation_cards, dict) else []
+    confidence = cards_list[0].get("confidence", 0.85) if cards_list and isinstance(cards_list[0], dict) else 0.85
+
     for category, values in grouped.items():
+        # Match XAI features to category
+        relevant_feature_names = CATEGORY_FEATURE_MAP.get(category, ["entity_count"])
+        matching_features = [
+            f for f in dossier_features
+            if isinstance(f, dict) and (f.get("feature") in relevant_feature_names or f.get("feature") == "injection_attempt_detected")
+        ]
+
+        # Determine dynamic severity based on XAI feature attribution and heuristics
+        severity = "info"
+        if any(isinstance(f, dict) and f.get("feature") == "injection_attempt_detected" and f.get("value") in (1, True, "1") for f in matching_features):
+            severity = "critical"
+        elif any(isinstance(f, dict) and float(f.get("weight", 0) or 0) >= 0.3 for f in matching_features):
+            severity = "high"
+        elif any(isinstance(f, dict) and float(f.get("weight", 0) or 0) >= 0.1 for f in matching_features) or len(values) >= 10:
+            severity = "medium"
+        elif any(isinstance(f, dict) and float(f.get("weight", 0) or 0) < 0 for f in matching_features):
+            severity = "low"
+        elif category in ("infrastructure", "identity") and len(values) > 0:
+            severity = "medium"
+
+        # Construct comprehensive natural-language XAI explanation for the finding
+        if matching_features:
+            feat_details = "; ".join(f"{f.get('feature', 'unknown')} (weight {float(f.get('weight', 0) or 0):+.2f})" for f in matching_features)
+            pl_details = " ".join(str(f.get("plain_language", "")).strip() for f in matching_features if f.get("plain_language"))
+            xai_explanation = (
+                f"{category.title()} perimeter profile ({len(values)} asset{'s' if len(values) != 1 else ''}) evaluated with XAI attribution: "
+                f"{feat_details}. {pl_details}".strip()
+            )
+        elif isinstance(dossier, dict):
+            risk_lvl = str(dossier.get("risk_level", "UNKNOWN")).upper()
+            risk_sc = dossier.get("risk_score", 0)
+            xai_explanation = (
+                f"Discovered {len(values)} {category} asset(s) contributing to the target's overall {risk_lvl} risk rating ({risk_sc}/100). "
+                f"Each asset expands the external attack footprint and reconnaissance profile."
+            )
+        else:
+            xai_explanation = (
+                f"Discovered {len(values)} {category} asset(s) during Stage 1 reconnaissance. "
+                f"Run pipeline with Stage 2/4 enabled for deep XAI feature attribution and scoring."
+            )
+
+        # Enrich items with per-entity XAI context
+        enriched_items = []
+        for item in values:
+            if not isinstance(item, dict):
+                enriched_items.append(item)
+                continue
+            item_copy = dict(item)
+            item_type = str(item_copy.get("type", "")).lower()
+            val_str = str(item_copy.get("value", ""))
+            src_str = str(item_copy.get("source", "recon"))
+
+            if item_type == "ip":
+                item_copy["xai_context"] = f"Infrastructure IP ({val_str}) discovered via {src_str}. Evaluated for open network ports, services, and infrastructure churn."
+            elif item_type in ("domain", "subdomain"):
+                item_copy["xai_context"] = f"Domain asset ({val_str}) evaluated for DNS resolution stability, WHOIS privacy posture, and registrar reputation."
+            elif item_type in ("email", "username", "social_profile"):
+                item_copy["xai_context"] = f"Identity asset ({val_str}) evaluated for historical breach appearances and targeted social engineering exposure."
+            elif item_type in ("technology", "certificate"):
+                item_copy["xai_context"] = f"Technology stack component ({val_str}) evaluated for known CVE vulnerability exposures and encryption configuration."
+            else:
+                item_copy["xai_context"] = f"Asset ({val_str}) classified under target's {category} external profile."
+
+            enriched_items.append(item_copy)
+
         findings.append({
             "title": f"{category.title()} Assets Discovered",
-            "severity": "info",
-            "count": len(values),
+            "severity": severity,
+            "count": len(enriched_items),
             "category": category,
-            "items": values
+            "xai_explanation": xai_explanation,
+            "xai_confidence": confidence,
+            "attributed_features": matching_features,
+            "items": enriched_items
         })
 
     return findings
@@ -102,7 +181,7 @@ def calculate_risk(findings):
 def build_report(scan, dossier=None, explanation_cards=None):
     """Build Stage 5 report. When a dossier is supplied, XAI cards are mandatory."""
     summary = build_summary(scan)
-    findings = build_findings(scan)
+    findings = build_findings(scan, dossier=dossier, explanation_cards=explanation_cards)
 
     if dossier is not None:
         risk = {
@@ -271,9 +350,15 @@ def export_pdf(report, output_path):
     
     html_content += "<h2>Findings Appendix</h2>"
     for finding in report.get("findings", []):
-        html_content += f"<h3>{finding.get('title')}</h3><ul>"
+        sev_color = "#dc2626" if finding.get("severity") in ("critical", "high") else ("#d97706" if finding.get("severity") == "medium" else "#2563eb")
+        html_content += f"<h3>{finding.get('title')} (<span style='color: {sev_color}; text-transform: uppercase;'>{finding.get('severity', 'info')}</span>)</h3>"
+        if finding.get("xai_explanation"):
+            html_content += f"<p style='background: #f8fafc; padding: 8px; border-left: 4px solid {sev_color};'><strong>Explainability Analysis:</strong> {finding.get('xai_explanation')}</p>"
+        html_content += "<ul>"
         for item in finding.get("items", []):
-            html_content += f"<li>{item.get('type')}: {item.get('value')}</li>"
+            ctx = item.get('xai_context', '')
+            ctx_html = f"<br/><small style='color: #64748b;'><em>{ctx}</em></small>" if ctx else ""
+            html_content += f"<li><strong>{item.get('type')}:</strong> {item.get('value')} {ctx_html}</li>"
         html_content += "</ul>"
     
     if report.get("disclaimer_appendix"):

@@ -178,40 +178,44 @@ def _compute_confidence(dossier: Mapping[str, Any]) -> float:
 
 
 def _build_explanation(dossier: Mapping[str, Any], top_features: List[Mapping[str, Any]]) -> str:
-    """Generate a natural-language explanation grounded in dossier fields.
+    """Generate a comprehensive, natural-language explanation grounded in dossier fields.
 
-    Every sentence is derived from actual data — no invented statements.
+    Synthesizes multiple risk drivers and mitigating factors into a cohesive analytical summary.
     """
-    target = _safe_str(dossier.get("target"), "unknown")
-    score = _safe_str(dossier.get("risk_score"), "0")
-    level = _safe_str(dossier.get("risk_level")) or _risk_level(_clip_score(float(score)))
-    exec_summary = _safe_str(dossier.get("executive_summary"), "")
+    target = _safe_str(dossier.get("target"), "unknown target")
+    score = _clip_score(float(dossier.get("risk_score", 0) or 0))
+    level = _safe_str(dossier.get("risk_level")) or _risk_level(score)
+    exec_summary = _safe_str(dossier.get("executive_summary"), "").strip()
 
     positive = []
     negative = []
     for feat in top_features:
         if not isinstance(feat, Mapping):
             continue
-        plain = _safe_str(feat.get("plain_language"), "")
-        if not plain:
-            name = _safe_str(feat.get("feature"), "feature")
-            value = _safe_str(feat.get("value"), "unknown")
-            plain = f"{name}={value}"
+        plain = _safe_str(feat.get("plain_language"), "").strip()
+        if not plain or plain.endswith("increased the score.") or plain.endswith("decreased the score."):
+            plain = _feature_plain_language(feat)
         weight = feat.get("weight", 0)
         if isinstance(weight, (int, float)) and weight >= 0:
-            positive.append(plain)
+            positive.append(plain.rstrip("."))
         else:
-            negative.append(plain)
+            negative.append(plain.rstrip("."))
 
     parts: List[str] = []
     parts.append(f"{target} received a risk score of {score} ({level}).")
 
     if positive:
-        parts.append("Primary risk drivers: " + "; ".join(positive) + ".")
+        if len(positive) == 1:
+            parts.append(f"Primary risk driver: {positive[0]}.")
+        else:
+            parts.append(f"Primary risk drivers: {'; '.join(positive)}.")
     if negative:
-        parts.append("Mitigating factors: " + "; ".join(negative) + ".")
+        if len(negative) == 1:
+            parts.append(f"Mitigating factor: {negative[0]}.")
+        else:
+            parts.append(f"Mitigating factors: {'; '.join(negative)}.")
 
-    if exec_summary and exec_summary != "none":
+    if exec_summary and exec_summary.lower() not in ("none", "null", ""):
         parts.append(exec_summary)
 
     return " ".join(parts)
@@ -334,9 +338,11 @@ def dossier_to_text(dossier: Mapping[str, Any]) -> str:
 
 
 def _feature_plain_language(feature: Mapping[str, Any]) -> str:
-    """Best-effort plain-language description for a risk feature."""
+    """Comprehensive plain-language description for a risk feature."""
     if "plain_language" in feature and feature["plain_language"]:
-        return _safe_str(feature["plain_language"])
+        pl = _safe_str(feature["plain_language"]).strip()
+        if not (pl.endswith("increased the score.") or pl.endswith("decreased the score.") or pl.endswith("affected the score.")):
+            return pl
 
     name = _safe_str(feature.get("feature"), "feature")
     value = feature.get("value")
@@ -348,7 +354,64 @@ def _feature_plain_language(feature: Mapping[str, Any]) -> str:
         value_text = _safe_str(value, "unknown")
 
     direction = "increased" if isinstance(weight, (int, float)) and weight >= 0 else "decreased"
-    return f"{name}={value_text} {direction} the score."
+
+    if name == "breach_appearance_count":
+        if isinstance(value, (int, float)) and value > 0:
+            return f"Observed in {value_text} historical data breach(es), directly increasing credential exposure and compromise risk"
+        return "No historical data breach appearances discovered across leak databases"
+    elif name == "exposed_email_count":
+        return f"Discovered {value_text} publicly exposed email address(es), expanding the social engineering and phishing attack surface"
+    elif name == "open_ports_sensitive":
+        return f"Detected {value_text} sensitive open network port(s) or service(s), creating immediate network ingress attack vectors"
+    elif name == "subdomain_count":
+        return f"Mapped {value_text} active subdomain(s), increasing external infrastructure footprint and perimeter complexity"
+    elif name == "entity_count":
+        return f"Target reconnaissance discovered {value_text} unique external asset(s) across the perimeter"
+    elif name == "unknown_registrar":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "Domain registration details and registrar identity are masked or unknown, raising attribution opacity"
+        return "Domain registrar attribution is verified and transparent"
+    elif name == "recent_infrastructure_churn":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "High recent DNS or infrastructure churn detected, potentially indicating ephemeral hosting or evasive setup"
+        return "Infrastructure hosting and DNS records exhibit long-term stability"
+    elif name == "aws_infrastructure":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "Target utilizes cloud hosting infrastructure (AWS), requiring specialized IAM and cloud security review"
+        return "Target does not rely on identified AWS cloud infrastructure"
+    elif name == "injection_attempt_detected":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "CRITICAL: Prompt injection or active adversarial payload detected within reconnaissance input data"
+        return "No adversarial prompt injection patterns detected"
+    elif name == "domain_age_days":
+        try:
+            days = float(value)
+            years = days / 365.25
+            return f"Domain has been registered for {value_text} days (~{years:.1f} years), indicating established historical reputation and stability"
+        except (ValueError, TypeError):
+            return f"Domain age is recorded at {value_text} days, contributing to domain reputation evaluation"
+    elif name == "privacy_registrar_used":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "WHOIS privacy protection is enabled on the domain registrar, obscuring administrative ownership details"
+        return "Domain registration contact information is publicly listed"
+    elif name == "cloudflare_proxied":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "External web traffic is proxied through Cloudflare CDN/WAF, filtering edge attacks and obscuring origin IP addresses"
+        return "Target infrastructure endpoints are directly exposed without CDN proxying"
+    elif name == "ipv6_enabled":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "IPv6 networking capabilities are active on target endpoints, requiring dual-stack firewall validation"
+        return "Target networking is currently restricted to IPv4 endpoints"
+    elif name == "deliberate_test_target":
+        if str(value).lower() in ("1", "true", "yes", "1.0"):
+            return "Target is identified as a known security testbed or demonstration domain (e.g., scanme.nmap.org)"
+        return "Target is evaluated as a standard production organization domain"
+
+    readable_name = name.replace("_", " ").title()
+    if isinstance(weight, (int, float)) and weight != 0:
+        return f"{readable_name} (value={value_text}) {direction} the score"
+    return f"{name}={value_text} {direction} the score"
+
 
 
 # ---------------------------------------------------------------------------
