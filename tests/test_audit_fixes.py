@@ -8,6 +8,9 @@ import html
 import json
 import pytest
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mind.mind_profile import _stub_dossier, score_from_features, DeterministicScorer
 from explabox_wrapper import _perturb_fairness, _fairness_check, _predict_score

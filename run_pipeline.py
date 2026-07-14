@@ -17,10 +17,7 @@ from schema_validation import (
 from explanation_card_build import BuildConfig, build_artifacts, write_outputs
 from graph_build import build_graph, render_graph
 
-_MIND_DIR = Path(__file__).resolve().parent / "mind"
-if str(_MIND_DIR) not in sys.path:
-    sys.path.insert(0, str(_MIND_DIR))
-from mind_profile import profile  # noqa: E402
+from mind.mind_profile import profile  # noqa: E402
 
 
 class PipelineError(Exception):

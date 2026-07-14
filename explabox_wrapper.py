@@ -53,12 +53,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Protocol, Sequence, Tuple, Union
 
-_MIND_DIR = Path(__file__).resolve().parent / "mind"
-if str(_MIND_DIR) not in sys.path:
-    sys.path.insert(0, str(_MIND_DIR))
-
 try:
-    from mind_profile import (
+    from mind.mind_profile import (
         extract_feature_vector,
         score_from_features,
         DeterministicScorer,
