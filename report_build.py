@@ -1,7 +1,9 @@
+import html as html_mod
 import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 from schema_validation import validate_report
 import logging
 
@@ -118,27 +120,27 @@ def build_findings(scan, dossier=None, explanation_cards=None):
                 f"Run pipeline with Stage 2/4 enabled for deep XAI feature attribution and scoring."
             )
 
-        # Enrich items with per-entity XAI context
+        # Enrich items — only include xai_context if backed by matching features.
+        # Do NOT fabricate analysis claims ("evaluated for ports", "evaluated for CVEs")
+        # when no corresponding feature data exists.
         enriched_items = []
+        matching_feature_names = {f.get("feature", "") for f in matching_features}
         for item in values:
             if not isinstance(item, dict):
                 enriched_items.append(item)
                 continue
             item_copy = dict(item)
-            item_type = str(item_copy.get("type", "")).lower()
             val_str = str(item_copy.get("value", ""))
-            src_str = str(item_copy.get("source", "recon"))
 
-            if item_type == "ip":
-                item_copy["xai_context"] = f"Infrastructure IP ({val_str}) discovered via {src_str}. Evaluated for open network ports, services, and infrastructure churn."
-            elif item_type in ("domain", "subdomain"):
-                item_copy["xai_context"] = f"Domain asset ({val_str}) evaluated for DNS resolution stability, WHOIS privacy posture, and registrar reputation."
-            elif item_type in ("email", "username", "social_profile"):
-                item_copy["xai_context"] = f"Identity asset ({val_str}) evaluated for historical breach appearances and targeted social engineering exposure."
-            elif item_type in ("technology", "certificate"):
-                item_copy["xai_context"] = f"Technology stack component ({val_str}) evaluated for known CVE vulnerability exposures and encryption configuration."
+            if matching_features:
+                # Build context only from actual feature evidence
+                feat_summaries = [str(f.get("plain_language", f.get("feature", ""))) for f in matching_features if f.get("plain_language")]
+                if feat_summaries:
+                    item_copy["xai_context"] = f"Asset ({val_str}): " + "; ".join(feat_summaries[:2])
+                else:
+                    item_copy["xai_context"] = f"Asset ({val_str}) — contributing feature data available."
             else:
-                item_copy["xai_context"] = f"Asset ({val_str}) classified under target's {category} external profile."
+                item_copy["xai_context"] = f"Asset ({val_str}) — not evaluated (no corresponding feature data)."
 
             enriched_items.append(item_copy)
 
@@ -179,21 +181,27 @@ def calculate_risk(findings):
 
 
 def build_report(scan, dossier=None, explanation_cards=None):
-    """Build Stage 5 report. When a dossier is supplied, XAI cards are mandatory."""
+    """Build Stage 5 report. When a dossier is supplied, XAI cards are mandatory.
+
+    The audit gate is checked but does NOT block report generation.
+    A failed gate produces a report with prominent failure status.
+    """
     summary = build_summary(scan)
     findings = build_findings(scan, dossier=dossier, explanation_cards=explanation_cards)
+    audit_gate_result = None
 
     if dossier is not None:
         risk = {
             "score": dossier.get("risk_score", 0),
             "rating": (dossier.get("risk_level") or "UNKNOWN").lower(),
             "source": "OSIRIS-Mind",
+            "score_mode": dossier.get("score_mode", "UNKNOWN"),
         }
         if explanation_cards is None:
             raise ValueError(
                 "Stage 4 audit gate: dossier risk scores require explanation_cards.json"
             )
-        _assert_explanation_gate(dossier, explanation_cards)
+        audit_gate_result = _assert_explanation_gate(dossier, explanation_cards)
     else:
         risk = calculate_risk(findings)
         risk["source"] = "entity_severity_heuristic"
@@ -218,12 +226,16 @@ def build_report(scan, dossier=None, explanation_cards=None):
         }
     }
 
+    if audit_gate_result is not None:
+        report["audit_gate"] = audit_gate_result
+
     if dossier is not None:
         report["dossier_summary"] = {
             "target": dossier.get("target"),
             "executive_summary": dossier.get("executive_summary", ""),
             "risk_level": dossier.get("risk_level"),
             "profiled_at": dossier.get("profiled_at"),
+            "score_mode": dossier.get("score_mode", "UNKNOWN"),
         }
 
     if xai_audit is not None:
@@ -241,14 +253,61 @@ def build_report(scan, dossier=None, explanation_cards=None):
 
 
 def _assert_explanation_gate(dossier, explanation_cards):
-    """Ensure every dossier target has a matching explanation card."""
+    """Real audit gate: checks card existence, score match, fairness, and robustness.
+
+    Returns an AuditGateResult dict with status PASS, FAIL, or BLOCKED.
+    Does NOT raise an exception — the report is still generated but with
+    the gate result prominently displayed.
+    """
     target = dossier.get("target")
+    dossier_score = dossier.get("risk_score", 0)
+    dossier_level = (dossier.get("risk_level") or "UNKNOWN").upper()
     cards = explanation_cards.get("cards", []) if isinstance(explanation_cards, dict) else []
-    matched = any(card.get("entity") == target for card in cards)
-    if not matched:
-        raise ValueError(
-            f"Stage 4 audit gate failed: no explanation card for target '{target}'"
+
+    failed_conditions: List[str] = []
+    matched_card = None
+    for card in cards:
+        if card.get("entity") == target:
+            matched_card = card
+            break
+
+    if matched_card is None:
+        failed_conditions.append(f"No explanation card found for target '{target}'")
+        return {
+            "status": "BLOCKED",
+            "passed": False,
+            "failed_conditions": failed_conditions,
+        }
+
+    # Score match (within tolerance of ±5)
+    card_score = matched_card.get("risk_score", -1)
+    if abs(card_score - dossier_score) > 5:
+        failed_conditions.append(
+            f"Card score ({card_score}) does not match dossier score ({dossier_score})"
         )
+
+    # Fairness check
+    fairness = matched_card.get("fairness_check", {})
+    if not fairness.get("passed", True):
+        failed_conditions.append("Fairness sensitivity test failed")
+
+    # Robustness check
+    robustness = matched_card.get("robustness_check", {})
+    if not robustness.get("passed", True):
+        failed_conditions.append("Robustness check failed")
+
+    if failed_conditions:
+        return {
+            "status": "FAIL",
+            "passed": False,
+            "failed_conditions": failed_conditions,
+        }
+
+    return {
+        "status": "PASS",
+        "passed": True,
+        "failed_conditions": [],
+    }
 
 
 def _build_xai_audit_section(dossier, explanation_cards):
@@ -324,18 +383,46 @@ def export_pdf(report, output_path):
     """
     Exports the report to PDF using WeasyPrint.
     Falls back to a warning and basic text file if not installed.
+
+    All attacker-controlled values are escaped with html.escape() to prevent XSS.
     """
-    target = report.get("summary", {}).get("target", "Unknown")
+    import html as html_mod
+    target = html_mod.escape(str(report.get("summary", {}).get("target", "Unknown")))
     html_content = f"<html><head><title>OSIRIS Report: {target}</title></head>"
     html_content += f"<body><h1>OSIRIS Report: {target}</h1>"
-    
+
+    # Audit gate banner
+    gate = report.get("audit_gate")
+    if gate:
+        gate_status = gate.get("status", "UNKNOWN")
+        if gate_status == "PASS":
+            gate_color = "#16a34a"
+        elif gate_status == "FAIL":
+            gate_color = "#dc2626"
+        else:
+            gate_color = "#d97706"
+        html_content += f"<div style='background:{gate_color};color:white;padding:16px;border-radius:8px;margin:16px 0;font-size:20px;text-align:center;'>"
+        html_content += f"<strong>AUDIT GATE: {html_mod.escape(gate_status)}</strong>"
+        if gate.get("failed_conditions"):
+            html_content += "<ul style='text-align:left;font-size:14px;margin-top:8px;'>"
+            for cond in gate["failed_conditions"]:
+                html_content += f"<li>{html_mod.escape(str(cond))}</li>"
+            html_content += "</ul>"
+        html_content += "</div>"
+
+    # Score mode badge
+    score_mode = report.get("risk_assessment", {}).get("score_mode", "")
+    if score_mode:
+        badge_color = {"REAL": "#16a34a", "STUB": "#d97706", "FALLBACK": "#dc2626"}.get(score_mode, "#6b7280")
+        html_content += f"<p><span style='background:{badge_color};color:white;padding:4px 10px;border-radius:4px;font-size:12px;'>{html_mod.escape(score_mode)}</span></p>"
+
     html_content += "<h2>Executive Summary</h2>"
     summary = report.get("summary", {})
-    html_content += f"<p>Scan Date: {summary.get('scan_date')}</p>"
-    html_content += f"<p>Total Entities: {summary.get('total_entities')}</p>"
-    
+    html_content += f"<p>Scan Date: {html_mod.escape(str(summary.get('scan_date', '')))}</p>"
+    html_content += f"<p>Total Entities: {html_mod.escape(str(summary.get('total_entities', '')))}</p>"
+
     risk = report.get("risk_assessment", {})
-    html_content += f"<h2>Risk Assessment</h2><p>Level: {risk.get('rating')} (Score: {risk.get('score')})</p>"
+    html_content += f"<h2>Risk Assessment</h2><p>Level: {html_mod.escape(str(risk.get('rating', '')))} (Score: {html_mod.escape(str(risk.get('score', '')))})</p>"
 
     xai = report.get("xai_audit")
     if xai:
@@ -344,42 +431,38 @@ def export_pdf(report, output_path):
         html_content += f"Fairness passed: {xai.get('overall_fairness_passed')} | "
         html_content += f"Robustness passed: {xai.get('overall_robustness_passed')}</p>"
         for card in xai.get("cards", []):
-            html_content += f"<h3>{card.get('entity')}</h3>"
-            html_content += f"<p>Score: {card.get('risk_score')} | Confidence: {card.get('confidence')}</p>"
-            html_content += f"<p>{card.get('explanation', '')}</p>"
-    
+            html_content += f"<h3>{html_mod.escape(str(card.get('entity', '')))}</h3>"
+            html_content += f"<p>Score: {html_mod.escape(str(card.get('risk_score', '')))} | Confidence: {html_mod.escape(str(card.get('confidence', '')))}</p>"
+            html_content += f"<p>{html_mod.escape(str(card.get('explanation', '')))}</p>"
+
     html_content += "<h2>Findings Appendix</h2>"
     for finding in report.get("findings", []):
         sev_color = "#dc2626" if finding.get("severity") in ("critical", "high") else ("#d97706" if finding.get("severity") == "medium" else "#2563eb")
-        html_content += f"<h3>{finding.get('title')} (<span style='color: {sev_color}; text-transform: uppercase;'>{finding.get('severity', 'info')}</span>)</h3>"
+        html_content += f"<h3>{html_mod.escape(str(finding.get('title', '')))} (<span style='color: {sev_color}; text-transform: uppercase;'>{html_mod.escape(str(finding.get('severity', 'info')))}</span>)</h3>"
         if finding.get("xai_explanation"):
-            html_content += f"<p style='background: #f8fafc; padding: 8px; border-left: 4px solid {sev_color};'><strong>Explainability Analysis:</strong> {finding.get('xai_explanation')}</p>"
+            html_content += f"<p style='background: #f8fafc; padding: 8px; border-left: 4px solid {sev_color};'><strong>Explainability Analysis:</strong> {html_mod.escape(str(finding.get('xai_explanation', '')))}</p>"
         html_content += "<ul>"
         for item in finding.get("items", []):
-            ctx = item.get('xai_context', '')
-            ctx_html = f"<br/><small style='color: #64748b;'><em>{ctx}</em></small>" if ctx else ""
-            html_content += f"<li><strong>{item.get('type')}:</strong> {item.get('value')} {ctx_html}</li>"
+            html_content += f"<li><strong>{html_mod.escape(str(item.get('type', '')))}:</strong> {html_mod.escape(str(item.get('value', '')))}</li>"
         html_content += "</ul>"
-    
+
     if report.get("disclaimer_appendix"):
-        import html
-        escaped_disclaimer = html.escape(report["disclaimer_appendix"])
-        html_content += "<h2>Appendix: Stage 0 Ethical Scope & Disclaimer</h2>"
+        escaped_disclaimer = html_mod.escape(report["disclaimer_appendix"])
+        html_content += "<h2>Appendix: Stage 0 Ethical Scope &amp; Disclaimer</h2>"
         html_content += f"<pre style='white-space: pre-wrap; background: #f1f5f9; padding: 12px; border-radius: 6px;'>{escaped_disclaimer}</pre>"
 
     html_content += "</body></html>"
-    
+
     try:
         from weasyprint import HTML
         HTML(string=html_content).write_pdf(output_path)
     except ImportError:
         logger.warning("WeasyPrint not found. Generating a basic HTML file instead of PDF.")
-        # Fallback to saving html, changing extension to .html
         out_path = Path(output_path).with_suffix(".html")
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html_content)
         return out_path
-        
+
     return output_path
 
 

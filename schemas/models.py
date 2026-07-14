@@ -25,10 +25,19 @@ class EntityType(str, Enum):
     SUBDOMAIN   = "subdomain"
     EMAIL       = "email"
     SOCIAL      = "social_profile"
+    USERNAME    = "username"
     URL         = "url"
     PHONE       = "phone"
+    ADDRESS     = "address"
+    LOCATION    = "location"
     PERSON      = "person"
     ORG         = "org"
+    ORGANIZATION = "organization"
+    ASN         = "asn"
+    CERTIFICATE = "certificate"
+    TECHNOLOGY  = "technology"
+    DNS_RECORD  = "dns_record"
+    CRYPTO_WALLET = "crypto_wallet"
     HASH        = "hash"
     VULN        = "vulnerability"
     UNKNOWN     = "unknown"
@@ -50,6 +59,8 @@ class RawEntity(BaseModel):
     source: Optional[str] = None            # e.g. "SpiderFoot"
     platform: Optional[str] = None          # e.g. "github" for social_profile
     metadata: Optional[Dict[str, Any]] = None
+    evidence_id: Optional[str] = None
+    evidence_sources: Optional[List[Dict[str, Any]]] = None
 
 
 class RawEvent(BaseModel):
@@ -96,6 +107,8 @@ class RiskFeature(BaseModel):
     value: Union[float, int, str]
     weight: float           # signed contribution to final risk score
     plain_language: str     # human-readable description for XAI card
+    normalized_value: Optional[float] = None
+    contribution_points: Optional[float] = None
 
 
 class ModelMetadata(BaseModel):
@@ -129,6 +142,9 @@ class Dossier(BaseModel):
     profile: DimensionProfile
     risk_score: int = Field(..., ge=0, le=100)
     risk_level: str | None = None                      # "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+    score_mode: Optional[str] = None                   # "REAL" | "STUB" | "FALLBACK"
+    scoring_metadata: Optional[Dict[str, Any]] = None
+    processing_time_seconds: Optional[float] = None
     injection_detected: bool = False
     injection_details: Optional[str] = None
     risk_features: List[RiskFeature]
