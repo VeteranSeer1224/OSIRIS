@@ -26,6 +26,21 @@
 
 ## 🏃 Running the Pipeline
 
+### Evidence Capsule verification (local development)
+
+The current local-development capsule flow is signed with an Ed25519 key and
+fails closed if a file is added, removed, or changed:
+
+```bash
+osiris capsule keygen local-dev.pem
+osiris capsule build --source outputs/ --output OSIRIS-Evidence-Capsule/ \
+  --case CASE-2026-0001 --run RUN-ID --key local-dev.pem
+osiris verify OSIRIS-Evidence-Capsule/
+```
+
+This is not a legal-admissibility claim and is not a production Cosign/KMS
+integration. See `docs/audits/baseline_findings.md` for current limitations.
+
 The full pipeline runs all five stages in order:
 
 **Sense → Mind → Web → Conscience → Report**

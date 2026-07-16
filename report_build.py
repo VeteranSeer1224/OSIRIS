@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from schema_validation import validate_report
+from release_policy import evaluate_release, require_release
 import logging
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,7 @@ def calculate_risk(findings):
     }
 
 
-def build_report(scan, dossier=None, explanation_cards=None):
+def build_report(scan, dossier=None, explanation_cards=None, case_authorization=None, evidence_integrity=None):
     """Build Stage 5 report. When a dossier is supplied, XAI cards are mandatory.
 
     The audit gate is checked but does NOT block report generation.
@@ -241,6 +242,15 @@ def build_report(scan, dossier=None, explanation_cards=None):
     if xai_audit is not None:
         report["xai_audit"] = xai_audit
 
+    if case_authorization is not None:
+        report["case_authorization"] = case_authorization
+    if evidence_integrity is not None:
+        report["evidence_integrity"] = evidence_integrity
+
+    # Every report is evaluated by the same policy.  Legacy pipeline output
+    # remains available only as a clearly marked technical-review artifact.
+    report["release_decision"] = evaluate_release(report).as_dict()
+
     disclaimer_path = Path(__file__).resolve().parent / "DISCLAIMER.md"
     if disclaimer_path.exists():
         report["disclaimer_appendix"] = disclaimer_path.read_text(encoding="utf-8")
@@ -261,7 +271,6 @@ def _assert_explanation_gate(dossier, explanation_cards):
     """
     target = dossier.get("target")
     dossier_score = dossier.get("risk_score", 0)
-    dossier_level = (dossier.get("risk_level") or "UNKNOWN").upper()
     cards = explanation_cards.get("cards", []) if isinstance(explanation_cards, dict) else []
 
     failed_conditions: List[str] = []
@@ -279,12 +288,32 @@ def _assert_explanation_gate(dossier, explanation_cards):
             "failed_conditions": failed_conditions,
         }
 
-    # Score match (within tolerance of ±5)
+    # The explanation is authoritative only when it is an exact rendering of
+    # the deterministic dossier decision; a tolerance masks broken lineage.
     card_score = matched_card.get("risk_score", -1)
-    if abs(card_score - dossier_score) > 5:
+    if card_score != dossier_score:
         failed_conditions.append(
             f"Card score ({card_score}) does not match dossier score ({dossier_score})"
         )
+
+    metadata = dossier.get("scoring_metadata")
+    if not isinstance(metadata, dict):
+        failed_conditions.append("Scoring metadata is missing")
+    else:
+        try:
+            intercept = float(metadata["intercept"])
+            contributions = metadata["contributions"]
+            total = intercept + sum(float(item["contribution_points"]) for item in contributions)
+            reconstructed = max(0, min(100, round(total)))
+            if reconstructed != dossier_score:
+                failed_conditions.append(
+                    f"Score reconstruction ({reconstructed}) does not match dossier score ({dossier_score})"
+                )
+            declared_raw = metadata.get("risk_score_raw")
+            if declared_raw is not None and abs(float(declared_raw) - total) > 1e-9:
+                failed_conditions.append("Signed contribution total does not match declared raw score")
+        except (KeyError, TypeError, ValueError):
+            failed_conditions.append("Scoring metadata is incomplete or invalid")
 
     # Fairness check
     fairness = matched_card.get("fairness_check", {})
@@ -342,7 +371,11 @@ def save_json(data, path):
 def export_misp(report, output_path):
     """
     Exports the report findings to a MISP-compatible JSON format.
+
+    This is an external dissemination path and is never available for a
+    blocked, stub, fallback, unsigned, or unauthorized report.
     """
+    require_release(report, "MISP export")
     misp_event = {
         "Event": {
             "info": f"OSIRIS Scan - {report['summary']['target']}",
@@ -388,8 +421,21 @@ def export_pdf(report, output_path):
     """
     import html as html_mod
     target = html_mod.escape(str(report.get("summary", {}).get("target", "Unknown")))
+    release = evaluate_release(report)
     html_content = f"<html><head><title>OSIRIS Report: {target}</title></head>"
     html_content += f"<body><h1>OSIRIS Report: {target}</h1>"
+
+    if not release.passed:
+        html_content += (
+            "<div style='background:#7f1d1d;color:white;padding:16px;border-radius:8px;"
+            "margin:16px 0;font-size:18px;text-align:center;'><strong>NOT CLEARED FOR "
+            "DISSEMINATION</strong><br/>AUDIT STATUS: FAILED OR BLOCKED<br/>FOR TECHNICAL "
+            "REVIEW ONLY</div>"
+        )
+        html_content += "<h2>Release-policy reasons</h2><ul>"
+        for reason in release.reasons:
+            html_content += f"<li>{html_mod.escape(reason)}</li>"
+        html_content += "</ul>"
 
     # Audit gate banner
     gate = report.get("audit_gate")

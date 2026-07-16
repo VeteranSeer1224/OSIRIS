@@ -751,21 +751,13 @@ _FAIRNESS_DOMAIN_REPLACEMENTS = [
 ]
 
 
-# Feature sets associated with each fairness variant — perturbation must
-# also alter these features so the deterministic scorer produces a different score.
-_FAIRNESS_FEATURE_MAP = {
-    "identity": ["exposed_email_count", "breach_appearance_count"],
-    "geo_temporal": ["unknown_registrar", "privacy_registrar_used"],
-    "domain": ["domain_age_days", "subdomain_count", "unknown_registrar"],
-}
-
-
 def _perturb_fairness(dossier: MutableMapping[str, Any], variant: str) -> MutableMapping[str, Any]:
-    """Apply a single fairness perturbation to a dossier copy.
+    """Apply one synthetic counterfactual without changing evidence.
 
-    CRITICAL FIX: Also perturbs risk_features associated with the variant
-    so the deterministic scorer produces a different score. Without this,
-    changing only profile text has zero effect on the score.
+    The test attribute must not be legitimate evidence for the configured use
+    case.  Operational scoring only permits the synthetic identity display
+    field here; geography and target-domain variants are excluded because they
+    can themselves be material infrastructure evidence.
     """
     perturbed = copy.deepcopy(dict(dossier))
     profile = perturbed.get("profile", {})
@@ -784,37 +776,8 @@ def _perturb_fairness(dossier: MutableMapping[str, Any], variant: str) -> Mutabl
             current = "[altered-identity]"
         profile["identity"] = current
         changed_fields.append("profile.identity")
-    elif variant == "geo_temporal":
-        current = _safe_str(profile.get("geo_temporal"), "")
-        for old, new in _FAIRNESS_REGION_MAP.items():
-            if old in current:
-                current = current.replace(old, new)
-        if current == _safe_str(profile.get("geo_temporal"), ""):
-            current = "[altered-geo-temporal]"
-        profile["geo_temporal"] = current
-        changed_fields.append("profile.geo_temporal")
-    elif variant == "domain":
-        current = _safe_str(perturbed.get("target"), "")
-        for old, new in _FAIRNESS_DOMAIN_REPLACEMENTS:
-            if old in current:
-                current = current.replace(old, new)
-        if current == _safe_str(perturbed.get("target"), ""):
-            current = "[altered-domain]"
-        perturbed["target"] = current
-        changed_fields.append("target")
-
-    # CRITICAL: Also perturb associated risk_features so scoring changes
-    features_to_zero = _FAIRNESS_FEATURE_MAP.get(variant, [])
-    risk_features = perturbed.get("risk_features", [])
-    if isinstance(risk_features, list):
-        for feat in risk_features:
-            if isinstance(feat, MutableMapping) and feat.get("feature") in features_to_zero:
-                feat["value"] = 0
-                if "contribution_points" in feat:
-                    feat["contribution_points"] = 0.0
-                if "normalized_value" in feat:
-                    feat["normalized_value"] = 0.0
-                changed_fields.append(f"risk_features.{feat['feature']}")
+    else:
+        raise ValueError(f"unsupported fairness counterfactual: {variant}")
 
     perturbed["profile"] = profile
     perturbed["_fairness_changed_fields"] = changed_fields
@@ -822,16 +785,12 @@ def _perturb_fairness(dossier: MutableMapping[str, Any], variant: str) -> Mutabl
 
 
 def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DEFAULT_FAIRNESS_THRESHOLD) -> JSONDict:
-    """Paired sensitivity test by perturbing identity, geo, and domain fields.
+    """Matched synthetic counterfactual test for non-evidentiary identity text.
 
-    Each perturbation modifies both profile text AND associated risk_features,
-    then re-scores through the deterministic scorer. This ensures the test
-    actually measures whether protected attributes affect the decision.
-
-    NOTE: This is a 'paired sensitivity test', not a 'statistical fairness audit'.
-    Three handcrafted variants cannot establish statistical significance.
+    This is not a population-level fairness claim. Any mutation to risk
+    features invalidates the test rather than being counted as a score change.
     """
-    variants = ("identity", "geo_temporal", "domain")
+    variants = ("identity",)
 
     if not dossiers:
         return {
@@ -857,12 +816,13 @@ def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DE
         base_level = _risk_level(base_score)
         for variant in variants:
             perturbed = _perturb_fairness(dict(dossier), variant)
+            evidence_unchanged = perturbed.get("risk_features", []) == dossier.get("risk_features", [])
             pert_score = _predict_score(perturbed)
             delta = abs(base_score - pert_score)
             decision_changed = _risk_level(pert_score) != base_level
             changed_fields = perturbed.get("_fairness_changed_fields", [])
             deltas.append(delta)
-            notes.append(f"{variant}: Δ={delta:.2f}")
+            notes.append(f"{variant}: Δ={delta:.2f}; evidence_unchanged={evidence_unchanged}")
             variant_details.append({
                 "variant": variant,
                 "original_score": base_score,
@@ -870,11 +830,13 @@ def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DE
                 "delta": round(delta, 4),
                 "decision_changed": decision_changed,
                 "fields_changed": changed_fields,
+                "evidence_unchanged": evidence_unchanged,
             })
 
     max_delta = max(deltas) if deltas else 0
     avg_delta = _mean_or_zero(deltas)
-    flagged = max_delta > threshold
+    evidence_mutated = any(not detail["evidence_unchanged"] for detail in variant_details)
+    flagged = max_delta > threshold or evidence_mutated
     passed = not flagged
 
     return {
@@ -885,6 +847,7 @@ def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DE
         "avg_score_delta": round(avg_delta, 4),
         "threshold": threshold,
         "flagged": flagged,
+        "outcome": "INVALID_TEST" if evidence_mutated else ("FAIL" if flagged else "PASS"),
         "evaluated_variants": len(deltas),
         "variant_details": variant_details[:15],
     }

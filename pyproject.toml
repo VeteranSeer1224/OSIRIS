@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osiris-evidence-platform"
+version = "0.1.0"
+description = "Evidence-first OSINT investigation platform"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "cryptography>=3.4,<4",
+  "jsonschema==4.26.0",
+  "networkx==3.6.1",
+  "pydantic==2.13.4",
+  "requests==2.34.2",
+  "tldextract==5.3.1",
+]
+
+[project.optional-dependencies]
+report = ["weasyprint==69.0"]
+graph = ["pyvis==0.3.2"]
+ai = ["openai==2.44.0", "torch==2.12.1+cpu", "explabox==1.0.3"]
+dev = ["pytest==9.1.1", "ruff>=0.8", "mypy>=1.13", "bandit>=1.8", "pip-audit>=2.7"]
+
+[project.scripts]
+osiris = "osiris:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+warn_return_any = true
+ignore_missing_imports = true

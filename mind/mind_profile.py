@@ -341,7 +341,7 @@ _REQUIRED_KEYS = {
 }
 
 _REQUIRED_PROFILE_KEYS = {
-    "identity", "geo_temporal", "ocean_psychology",
+    "identity", "geo_temporal",
     "technical_stack", "opsec_posture",
 }
 
@@ -380,10 +380,13 @@ def parse_and_validate(raw_text: str, target: str) -> Dict[str, Any]:
     if missing_profile:
         raise ValueError(f"profile missing required keys: {missing_profile}")
 
-    ocean = profile.get("ocean_psychology", {})
-    missing_ocean = _REQUIRED_OCEAN_KEYS - set(ocean.keys())
-    if missing_ocean:
-        raise ValueError(f"ocean_psychology missing required keys: {missing_ocean}")
+    # Legacy experimental OCEAN content may be parsed for backwards
+    # compatibility, but it is not required for an operational dossier.
+    if "ocean_psychology" in profile:
+        ocean = profile["ocean_psychology"]
+        missing_ocean = _REQUIRED_OCEAN_KEYS - set(ocean.keys())
+        if missing_ocean:
+            raise ValueError(f"ocean_psychology missing required keys: {missing_ocean}")
 
     score = data.get("risk_score")
     if not isinstance(score, (int, float)) or not (0 <= score <= 100):
@@ -610,17 +613,7 @@ def _stub_dossier(target: str, scan: Dict[str, Any]) -> Dict[str, Any]:
         "profile": {
             "identity": f"Stub profile for {target}. {entity_count} entities found.",
             "geo_temporal": "Temporal analysis unavailable in stub mode.",
-            "ocean_psychology": {
-                "openness": 0.5,
-                "conscientiousness": 0.5,
-                "extraversion": 0.5,
-                "agreeableness": 0.5,
-                "neuroticism": 0.5,
-                "rationale": "All dimensions set to neutral (0.5) in stub mode. "
-                             "OCEAN scores are excluded from risk scoring.",
-            },
             "technical_stack": ["unknown"],
-            "ideology": None,
             "opsec_posture": "Unable to assess OpSec posture in stub mode.",
         },
         "risk_score": scoring.risk_score,
@@ -831,6 +824,10 @@ class DeterministicScorer:
             if not isinstance(feat, dict):
                 continue
             name = feat.get("feature", "")
+            if str(name).lower().startswith(("ocean_", "ideology")):
+                # Psychological and ideology dimensions are experimental only;
+                # never silently allow them into the operational score.
+                continue
             raw_val = feat.get("value", 0)
             try:
                 raw_val = float(raw_val)

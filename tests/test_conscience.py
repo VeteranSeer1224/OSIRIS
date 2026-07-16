@@ -70,7 +70,8 @@ def test_fairness_perturbation_metrics(sample_dossier: Dict[str, Any]) -> None:
     assert "max_score_delta" in result
     assert "avg_score_delta" in result
     assert "flagged" in result
-    assert result["evaluated_variants"] == 3
+    assert result["evaluated_variants"] == 1
+    assert result["outcome"] == "PASS"
     assert isinstance(result["passed"], bool)
 
 

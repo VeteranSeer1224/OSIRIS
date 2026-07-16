@@ -2,13 +2,16 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from release_policy import ReleaseBlockedError
 from run_pipeline import pipeline_from_existing_scan
 from schema_validation import validate_explanation_cards
 
 
-def test_pipeline_end_to_end(tmp_path):
+def test_pipeline_end_to_end_creates_review_only_output_for_stub_dossier(tmp_path):
     sf_data = [
         {
             "type": "DOMAIN_NAME",
@@ -31,7 +34,7 @@ def test_pipeline_end_to_end(tmp_path):
         spiderfoot_json=str(sf_file),
         output_dir=str(tmp_path),
         do_export_pdf=True,
-        do_export_misp=True,
+        do_export_misp=False,
         mind_dry_run=True,
         skip_graph=False,
     )
@@ -47,7 +50,6 @@ def test_pipeline_end_to_end(tmp_path):
         "report",
         "graph",
         "pdf_report",
-        "misp_export",
     }
     assert expected_keys.issubset(set(results.keys()))
 
@@ -64,6 +66,28 @@ def test_pipeline_end_to_end(tmp_path):
     assert report["xai_audit"]["card_count"] >= 1
     assert report["risk_assessment"]["source"] == "OSIRIS-Mind"
 
-    with open(results["misp_export"]) as f:
-        misp = json.load(f)
-        assert "Event" in misp
+    assert report["release_decision"]["status"] == "BLOCKED"
+    assert "misp_export" not in results
+    assert Path(results["raw_evidence"]).exists()
+    assert Path(results["raw_evidence_metadata"]).exists()
+    assert report["evidence_integrity"]["status"] == "PASS"
+    assert report["report_metadata"]["case_id"] == "UNAUTHORIZED-LEGACY"
+    lineage = json.loads(Path(results["lineage"]).read_text(encoding="utf-8"))
+    assert report["report_metadata"]["run_id"] == lineage["run_id"]
+
+
+def test_stub_pipeline_cannot_export_misp(tmp_path):
+    sf_file = tmp_path / "sf_output.json"
+    sf_file.write_text(json.dumps([
+        {"type": "DOMAIN_NAME", "data": "example.com", "module": "sfp_test"}
+    ]), encoding="utf-8")
+
+    with pytest.raises(ReleaseBlockedError, match="MISP export is prohibited"):
+        pipeline_from_existing_scan(
+            target="example.com",
+            spiderfoot_json=str(sf_file),
+            output_dir=str(tmp_path),
+            do_export_misp=True,
+            mind_dry_run=True,
+            skip_graph=True,
+        )

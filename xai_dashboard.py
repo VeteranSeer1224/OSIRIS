@@ -17,6 +17,14 @@ def _escape(val: Any) -> str:
     return html_mod.escape(str(val))
 
 
+def _number(value: Any, default: float = 0.0) -> float:
+    """Coerce untrusted numeric display values without allowing template errors."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def generate_dashboard_html(
     raw_scan: Dict[str, Any],
     dossier: Dict[str, Any],
@@ -26,14 +34,14 @@ def generate_dashboard_html(
     output_path: Path,
 ) -> Path:
     target = _escape(dossier.get("target") or raw_scan.get("target") or "Unknown Target")
-    score = dossier.get("risk_score", 0)
+    score = _number(dossier.get("risk_score", 0))
     level = _escape((dossier.get("risk_level") or "UNKNOWN").upper())
     score_mode = _escape((dossier.get("score_mode") or "UNKNOWN").upper())
     
     scoring_metadata = dossier.get("scoring_metadata", {})
-    intercept = scoring_metadata.get("intercept", 15.0)
+    intercept = _number(scoring_metadata.get("intercept", 15.0), 15.0)
     scorer_version = _escape(scoring_metadata.get("scorer_version", "1.0.0"))
-    evidence_sufficiency = scoring_metadata.get("evidence_sufficiency", 1.0)
+    evidence_sufficiency = _number(scoring_metadata.get("evidence_sufficiency", 1.0), 1.0)
     abstain = scoring_metadata.get("abstain", False)
 
     # Audit gate info
@@ -63,7 +71,7 @@ def generate_dashboard_html(
 
     for c in contributions:
         c_name = _escape(c.get("feature", "unknown"))
-        c_pts = c.get("contribution_points", 0.0)
+        c_pts = _number(c.get("contribution_points", 0.0))
         if abs(c_pts) < 0.001:
             continue
         running_sum += c_pts
@@ -102,9 +110,9 @@ def generate_dashboard_html(
             continue
         f_name = _escape(rf.get("feature", ""))
         f_val = _escape(rf.get("value", ""))
-        f_norm = rf.get("normalized_value", 0.0)
-        f_wt = rf.get("weight", 0.0)
-        f_pts = rf.get("contribution_points", 0.0)
+        f_norm = _number(rf.get("normalized_value", 0.0))
+        f_wt = _number(rf.get("weight", 0.0))
+        f_pts = _number(rf.get("contribution_points", 0.0))
         if f_pts is None:
             f_pts = f_norm * f_wt if f_norm is not None else 0.0
         f_desc = _escape(rf.get("plain_language", ""))
@@ -146,7 +154,7 @@ def generate_dashboard_html(
         if not isinstance(rf, dict):
             continue
         f_name = _escape(rf.get("feature", ""))
-        f_pts = rf.get("contribution_points", 0.0)
+        f_pts = _number(rf.get("contribution_points", 0.0))
         f_desc = _escape(rf.get("plain_language", ""))
         if f_pts > 0.01:
             why_rows.append(f"<li><strong>{f_name} (+{f_pts:.2f} pts):</strong> {f_desc}</li>")
@@ -180,7 +188,7 @@ def generate_dashboard_html(
         if not isinstance(rf, dict):
             continue
         f_name = _escape(rf.get("feature", ""))
-        f_pts = rf.get("contribution_points", 0.0)
+        f_pts = _number(rf.get("contribution_points", 0.0))
         if abs(f_pts) >= abs(needed_pts) and needed_pts != -1:
             cf_rows.append(f"<li>&rarr; Eliminating feature <code>{f_name}</code> ({f_pts:+.2f} pts) alone would cross a risk level threshold.</li>")
 
@@ -191,9 +199,9 @@ def generate_dashboard_html(
         if not isinstance(fd, dict):
             continue
         var_name = _escape(fd.get("variant", ""))
-        orig_s = fd.get("original_score", 0)
-        pert_s = fd.get("perturbed_score", 0)
-        delta_s = fd.get("delta", 0.0)
+        orig_s = _number(fd.get("original_score", 0))
+        pert_s = _number(fd.get("perturbed_score", 0))
+        delta_s = _number(fd.get("delta", 0.0))
         flip_s = fd.get("decision_changed", False)
         fields_c = _escape(", ".join(fd.get("fields_changed", [])))
         fairness_rows.append(f"""
@@ -226,6 +234,7 @@ def generate_dashboard_html(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
     <title>OSIRIS XAI Analyst Dashboard — {target}</title>
     <style>
         :root {{
@@ -378,7 +387,7 @@ def generate_dashboard_html(
         <div class="header-panel">
             <div class="header-title">
                 <h1>OSIRIS XAI Analyst Dashboard</h1>
-                <p>Target Entity: <strong>{target}</strong> | Profiled At: {dossier.get('profiled_at', 'unknown')}</p>
+                <p>Target Entity: <strong>{target}</strong> | Profiled At: {_escape(dossier.get('profiled_at', 'unknown'))}</p>
             </div>
             <div class="header-stats">
                 <div class="stat-box">

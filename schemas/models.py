@@ -129,7 +129,9 @@ class DimensionProfile(BaseModel):
     """Six-dimension cognitive profile for a target entity."""
     identity: str
     geo_temporal: str
-    ocean_psychology: OceanProfile
+    # Experimental-only legacy fields. They are intentionally not required by
+    # the operational schema and are never valid scoring inputs by default.
+    ocean_psychology: Optional[OceanProfile] = None
     technical_stack: List[str]
     ideology: Optional[str] = None
     opsec_posture: str

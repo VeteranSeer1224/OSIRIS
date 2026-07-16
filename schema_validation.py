@@ -156,6 +156,15 @@ REPORT_SCHEMA = {
             "type": "object"
         },
         "xai_audit": XAI_AUDIT_SCHEMA,
+        "release_decision": {
+            "type": "object",
+            "required": ["status", "passed", "reasons"],
+            "properties": {
+                "status": {"type": "string"},
+                "passed": {"type": "boolean"},
+                "reasons": {"type": "array", "items": {"type": "string"}},
+            },
+        },
         "disclaimer_appendix": {
             "type": ["string", "null"]
         }

@@ -3,6 +3,7 @@
 # ── Core pipeline dependencies (pinned for reproducibility) ──────────────
 jsonschema==4.26.0
 pydantic==2.13.4
+cryptography==3.4.8
 networkx==3.6.1
 requests==2.34.2
 tldextract==5.3.1

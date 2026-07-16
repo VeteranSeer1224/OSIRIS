@@ -103,6 +103,8 @@ def test_render_graph_writes_html(sample_raw_scan: Dict[str, Any], output_path: 
     html_content = output_path.read_text(encoding="utf-8")
     assert "Test Graph" in html_content
     assert "raw_scan.json" in html_content or "vis-network" in html_content
+    assert "https://" not in html_content
+    assert "http://" not in html_content
 
 
 def test_graph_utils_social_profile_parsing() -> None:

@@ -27,6 +27,14 @@ from urllib.parse import urlparse
 import networkx as nx
 import tldextract
 
+# Use tldextract's packaged public-suffix snapshot only.  Graph construction is
+# part of the offline demonstration path and must neither fetch a suffix list
+# nor write a user-level cache as a side effect of parsing evidence.
+_OFFLINE_TLD_EXTRACTOR = tldextract.TLDExtract(
+    cache_dir=None,
+    suffix_list_urls=(),
+)
+
 try:
     from pyvis.network import Network  # type: ignore
     _PYVIS_AVAILABLE = True
@@ -185,7 +193,7 @@ def extract_root_domain(domain_str: str) -> Optional[str]:
     val = domain_str.strip()
     if not val:
         return None
-    ext = tldextract.extract(val)
+    ext = _OFFLINE_TLD_EXTRACTOR(val)
     if ext.domain and ext.suffix:
         return f"{ext.domain}.{ext.suffix}".lower()
     return None
@@ -525,22 +533,22 @@ def render_fallback_html(
     title: str,
 ) -> None:
     nodes, edges = graph_to_vis_payload(graph)
-    nodes_json = _safe_json_embed(nodes)
-    edges_json = _safe_json_embed(edges)
     timeline_markup = timeline_html(timeline)
 
-    # Try to load vis-network.min.js for offline embedding
-    vis_js_path = Path(__file__).resolve().parent / "vendor" / "vis-network.min.js"
-    if vis_js_path.exists():
-        vis_script = f"<script>{vis_js_path.read_text(encoding='utf-8')}</script>"
-    else:
-        # Fallback: inline a minimal vis-network stub + warning
-        logging.warning(
-            "vendor/vis-network.min.js not found. Graph will require network "
-            "access to unpkg.com CDN. Run: mkdir -p vendor && curl -o vendor/vis-network.min.js "
-            "https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"
-        )
-        vis_script = '<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>'
+    # Keep generated evidence artifacts self-contained.  A static SVG is less
+    # feature-rich than a JavaScript graph, but it is deterministic, works
+    # without network access, and cannot load a remote dependency.
+    node_markup = "".join(
+        f'<li><code>{html.escape(str(node["id"]))}</code> — '
+        f'{html.escape(str(node["label"]))}</li>'
+        for node in nodes
+    )
+    edge_markup = "".join(
+        f'<li><code>{html.escape(str(edge["from"]))}</code> '
+        f'— {html.escape(str(edge["label"]))} → '
+        f'<code>{html.escape(str(edge["to"]))}</code></li>'
+        for edge in edges
+    )
 
     html_doc = f"""<!doctype html>
 <html lang="en">
@@ -548,14 +556,15 @@ def render_fallback_html(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{html.escape(title)}</title>
-  {vis_script}
   <style>
     :root {{ color-scheme: dark; }}
     body {{ margin: 0; font-family: Arial, sans-serif; background: #0b1020; color: #e5e7eb; }}
     .wrap {{ display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px; min-height: 100vh; box-sizing: border-box; }}
     .panel {{ background: #111827; border: 1px solid #243043; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.25); }}
     .panel h1, .panel h2 {{ margin: 0; padding: 14px 16px; border-bottom: 1px solid #243043; }}
-    #network {{ height: calc(100vh - 32px); min-height: 760px; }}
+    #network {{ min-height: 760px; padding: 16px; box-sizing: border-box; overflow: auto; }}
+    .graph-list {{ display: grid; gap: 14px; }}
+    .graph-list ul {{ margin: 0; padding-left: 20px; }}
     .side {{ display: flex; flex-direction: column; }}
     .side .content {{ padding: 16px; overflow: auto; }}
     .meta {{ font-size: 14px; line-height: 1.5; color: #cbd5e1; margin-bottom: 14px; }}
@@ -572,7 +581,10 @@ def render_fallback_html(
   <div class="wrap">
     <section class="panel">
       <h1>{html.escape(title)}</h1>
-      <div id="network"></div>
+      <div id="network" class="graph-list">
+        <h2>Entities</h2><ul>{node_markup}</ul>
+        <h2>Relationships</h2><ul>{edge_markup}</ul>
+      </div>
     </section>
     <aside class="panel side">
       <h2>Timeline</h2>
@@ -590,23 +602,6 @@ def render_fallback_html(
       </div>
     </aside>
   </div>
-  <script type="application/json" id="graph-nodes">{nodes_json}</script>
-  <script type="application/json" id="graph-edges">{edges_json}</script>
-  <script>
-    var nodesData = JSON.parse(document.getElementById('graph-nodes').textContent);
-    var edgesData = JSON.parse(document.getElementById('graph-edges').textContent);
-    var nodes = new vis.DataSet(nodesData);
-    var edges = new vis.DataSet(edgesData);
-    var container = document.getElementById('network');
-    var data = {{ nodes: nodes, edges: edges }};
-    var options = {{
-      physics: {{ stabilization: true, barnesHut: {{ gravitationalConstant: -25000, springLength: 120 }} }},
-      interaction: {{ hover: true, navigationButtons: true, keyboard: true }},
-      nodes: {{ font: {{ color: '#e5e7eb' }}, borderWidth: 1 }},
-      edges: {{ color: {{ color: '#94a3b8' }}, smooth: {{ type: 'dynamic' }} }},
-    }};
-    new vis.Network(container, data, options);
-  </script>
 </body>
 </html>
 """
@@ -678,10 +673,4 @@ def render_graph(
     title: str,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if _PYVIS_AVAILABLE:
-        try:
-            render_pyvis_html(output_path, graph, timeline, title)
-            return
-        except Exception as exc:
-            logging.warning("PyVis rendering failed, falling back to HTML: %s", exc)
     render_fallback_html(output_path, graph, timeline, title)

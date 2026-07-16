@@ -16,6 +16,14 @@ from schema_validation import (
 )
 from explanation_card_build import BuildConfig, build_artifacts, write_outputs
 from graph_build import build_graph, render_graph
+from case_authorization import (
+    AuthorizationError,
+    CollectionMode,
+    load_case_authorization,
+    validate_collection,
+)
+from evidence_store import LocalEvidenceStore
+from provenance import build_provenance
 
 from mind.mind_profile import profile  # noqa: E402
 
@@ -102,17 +110,35 @@ def pipeline_from_existing_scan(
     mind_dry_run=True,
     skip_graph=False,
     do_export_dashboard=False,
+    case_authorization_path=None,
 ):
     """Run Sense → Mind → Web → Conscience → Report."""
     check_ethics_gate()
     output_dir = ensure_dir(output_dir)
     run_id = str(uuid.uuid4())
     run_timestamp = datetime.now(timezone.utc).isoformat()
+    authorization = None
+    if case_authorization_path:
+        try:
+            authorization = load_case_authorization(case_authorization_path)
+            validate_collection(authorization, target, CollectionMode.PASSIVE)
+        except AuthorizationError as exc:
+            raise PipelineError(f"Case authorization failed: {exc}") from exc
+    case_id = authorization.case_id if authorization else "UNAUTHORIZED-LEGACY"
+    evidence_store = LocalEvidenceStore(output_dir)
+    raw_record = evidence_store.preserve(
+        Path(spiderfoot_json).read_bytes(), case_id=case_id, run_id=run_id,
+        source_type="spiderfoot_export", source_identifier=str(spiderfoot_json),
+        mime_type="application/json",
+    )
+    evidence_store.verify(raw_record)
 
     raw_scan = generate_raw_scan(
         target,
         spiderfoot_json
     )
+    raw_scan["case_id"] = case_id
+    raw_scan["run_id"] = run_id
 
     validate_raw_scan(raw_scan)
 
@@ -125,6 +151,9 @@ def pipeline_from_existing_scan(
         output_path=str(dossier_path),
         dry_run=mind_dry_run,
     )
+    dossier["case_id"] = case_id
+    dossier["run_id"] = run_id
+    save_json(dossier, dossier_path)
 
     graph_path = None
     if not skip_graph:
@@ -142,6 +171,8 @@ def pipeline_from_existing_scan(
         output_dir=output_dir,
     )
     conscience_artifacts = build_artifacts(conscience_config)
+    conscience_artifacts.explanation_cards["case_id"] = case_id
+    conscience_artifacts.explanation_cards["run_id"] = run_id
     conscience_paths = write_outputs(conscience_artifacts, output_dir)
     validate_explanation_cards(conscience_artifacts.explanation_cards)
 
@@ -150,7 +181,11 @@ def pipeline_from_existing_scan(
         raw_scan,
         dossier=dossier,
         explanation_cards=explanation_cards,
+        case_authorization=(authorization.model_dump(mode="json") if authorization else None),
+        evidence_integrity={"status": "PASS", "raw_evidence_ids": [raw_record.evidence_id]},
     )
+    report["report_metadata"]["case_id"] = case_id
+    report["report_metadata"]["run_id"] = run_id
 
     validate_report(report)
 
@@ -158,6 +193,12 @@ def pipeline_from_existing_scan(
     save_json(report, report_path)
 
     results = {
+        "raw_evidence": str(output_dir / raw_record.relative_path),
+        "raw_evidence_metadata": str(
+            (output_dir / raw_record.relative_path).with_suffix(
+                (output_dir / raw_record.relative_path).suffix + ".metadata.json"
+            )
+        ),
         "raw_scan": str(raw_scan_path),
         "dossier": str(dossier_path),
         "explanation_cards": str(conscience_paths["explanation_cards"]),
@@ -191,6 +232,8 @@ def pipeline_from_existing_scan(
     lineage = {
         "schema_version": "1.0",
         "run_id": run_id,
+        "case_id": case_id,
+        "raw_evidence": raw_record.__dict__,
         "generated_at": run_timestamp,
         "model_metadata": dossier.get("model_metadata", {}),
         "artifact_hashes": artifact_hashes,
@@ -198,6 +241,13 @@ def pipeline_from_existing_scan(
     lineage_path = output_dir / "lineage.json"
     save_json(lineage, lineage_path)
     results["lineage"] = str(lineage_path)
+
+    provenance_path = output_dir / "provenance.jsonld"
+    save_json(build_provenance(
+        case_id=case_id, run_id=run_id, raw_evidence=raw_record.__dict__,
+        artifacts=artifact_hashes,
+    ), provenance_path)
+    results["provenance"] = str(provenance_path)
 
     if do_export_dashboard:
         from xai_dashboard import generate_dashboard_html
@@ -218,7 +268,20 @@ def pipeline_with_spiderfoot(
     do_export_dashboard=False,
     modules=None,
     use_case=None,
+    case_authorization_path=None,
 ):
+    if not case_authorization_path:
+        raise PipelineError(
+            "Active SpiderFoot collection is disabled by default. Supply an approved "
+            "--case-authorization file with explicit target scope and collection mode."
+        )
+    try:
+        authorization = load_case_authorization(case_authorization_path)
+        # SpiderFoot execution is active collection even when selected modules
+        # are nominally passive: invoking it can make network requests.
+        validate_collection(authorization, target, CollectionMode.ACTIVE)
+    except AuthorizationError as exc:
+        raise PipelineError(f"Case authorization failed: {exc}") from exc
     output_dir = ensure_dir(output_dir)
 
     spiderfoot_output = output_dir / "spiderfoot_output.json"
@@ -256,6 +319,11 @@ def main():
     parser.add_argument(
         "--input",
         help="Existing SpiderFoot JSON export"
+    )
+
+    parser.add_argument(
+        "--case-authorization",
+        help="Approved case-authorization JSON required for active SpiderFoot collection",
     )
 
     parser.add_argument(
@@ -317,6 +385,7 @@ def main():
                 mind_dry_run=not args.mind_live,
                 skip_graph=args.skip_graph,
                 do_export_dashboard=args.export_dashboard,
+                case_authorization_path=args.case_authorization,
             )
         else:
             results = pipeline_with_spiderfoot(
@@ -329,6 +398,7 @@ def main():
                 do_export_dashboard=args.export_dashboard,
                 modules=args.modules,
                 use_case=args.use_case,
+                case_authorization_path=args.case_authorization,
             )
 
         print("\nPipeline completed successfully.\n")
