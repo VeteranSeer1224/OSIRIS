@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 from datetime import datetime
 
 import pytest
@@ -64,7 +64,7 @@ def sample_scan_nmap() -> Dict[str, Any]:
     """Uses the real nmap_raw.json fixture."""
     p = Path(__file__).parent.parent / "schemas" / "samples" / "nmap_raw.json"
     if p.exists():
-        return json.loads(p.read_text())
+        return cast(Dict[str, Any], json.loads(p.read_text()))
     # fallback if samples not yet populated
     return {
         "target": "scanme.nmap.org",

@@ -1,0 +1,3 @@
+"""
+OSIRIS Pipeline Schemas Package
+"""

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 import pytest
 
@@ -27,7 +27,7 @@ from schema_validation import validate_explanation_cards  # noqa: E402
 @pytest.fixture()
 def sample_dossier() -> Dict[str, Any]:
     path = REPO_ROOT / "schemas" / "samples" / "sample_dossier.json"
-    dossier = json.loads(path.read_text(encoding="utf-8"))
+    dossier = cast(Dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
     dossier.setdefault("risk_level", "HIGH")
     dossier.setdefault("insufficient_data_flags", [])
     dossier.setdefault("executive_summary", "Sample executive summary for example.com.")

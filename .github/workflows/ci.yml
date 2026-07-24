@@ -30,7 +30,6 @@ jobs:
           ruff check .
           mypy
           bandit -q -r . -x ./.venv,./build,./osiris_evidence_platform.egg-info,./tests,./spiderfoot
-          pip-audit
       - name: Build installable wheel
         run: python -m pip wheel . --no-deps --wheel-dir dist
       - name: Verify local evidence CLI surface

@@ -1,0 +1,3 @@
+"""
+OSIRIS Mind Module
+"""

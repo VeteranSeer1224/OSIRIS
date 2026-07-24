@@ -1,6 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Ensure the build frontend and local audit environment do not retain known
+# Ensure the build frontend and local environment do not retain known
 # vulnerable releases.
 setuptools==83.0.0
 

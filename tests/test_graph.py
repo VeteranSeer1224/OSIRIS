@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 import pytest
 
@@ -20,7 +20,7 @@ import graph_utils  # noqa: E402
 @pytest.fixture()
 def sample_raw_scan() -> Dict[str, Any]:
     path = REPO_ROOT / "schemas" / "samples" / "sample_raw_scan.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return cast(Dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
 
 
 @pytest.fixture()

@@ -1,3 +1,5 @@
+from typing import Any
+
 from schema_validation import (
     validate_raw_scan,
     validate_report,
@@ -19,7 +21,7 @@ def test_raw_scan_schema():
 
 
 def test_report_schema():
-    report = {
+    report: dict[str, Any] = {
         "report_metadata": {},
         "summary": {},
         "risk_assessment": {},

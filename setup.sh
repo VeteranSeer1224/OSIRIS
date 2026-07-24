@@ -36,8 +36,6 @@ pip install --upgrade pip
 # ── 3. Python dependencies (pinned in requirements.txt) ──────────────────
 echo ""
 echo "[4/5] Installing Python dependencies..."
-# Pre-install pinned CPU-only PyTorch (~192MB) so explabox doesn't pull down 6GB of CUDA drivers
-pip install torch==2.12.1+cpu --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 
 # ── 4. SpiderFoot (Stage 1 — optional, for live scans) ───────────────────
