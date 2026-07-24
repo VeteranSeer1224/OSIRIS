@@ -20,6 +20,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlparse
@@ -48,23 +49,31 @@ except Exception:  # pragma: no cover - optional dependency
 # -------------------------------------------------------------------
 
 ENTITY_COLORS = {
-    "target": "#7c3aed",
-    "domain": "#4F81BD",
-    "subdomain": "#6FA8DC",
-    "ip": "#F6B26B",
-    "email": "#93C47D",
-    "social_profile": "#E06666",
-    "url": "#8E7CC3",
-    "phone": "#FFD966",
-    "organization": "#76A5AF",
-    "person": "#C27BA0",
-    "event": "#6b7280",
-    "other": "#999999",
-    "unknown": "#374151",
+    "target": "#38bdf8",
+    "domain": "#8b5cf6",
+    "subdomain": "#6366f1",
+    "ip": "#14b8a6",
+    "email": "#f59e0b",
+    "social_profile": "#ec4899",
+    "url": "#a78bfa",
+    "phone": "#eab308",
+    "organization": "#06b6d4",
+    "person": "#c084fc",
+    "username": "#d946ef",
+    "address": "#fb923c",
+    "location": "#22c55e",
+    "technology": "#2dd4bf",
+    "dns_record": "#818cf8",
+    "asn": "#0ea5e9",
+    "certificate": "#f97316",
+    "crypto_wallet": "#facc15",
+    "event": "#64748b",
+    "other": "#94a3b8",
+    "unknown": "#94a3b8",
 }
 
 ENTITY_SHAPES = {
-    "target": "dot",
+    "target": "hexagon",
     "domain": "dot",
     "subdomain": "dot",
     "ip": "triangle",
@@ -74,6 +83,14 @@ ENTITY_SHAPES = {
     "phone": "square",
     "organization": "hexagon",
     "person": "ellipse",
+    "username": "ellipse",
+    "address": "box",
+    "location": "diamond",
+    "technology": "hexagon",
+    "dns_record": "dot",
+    "asn": "triangle",
+    "certificate": "hexagon",
+    "crypto_wallet": "diamond",
     "event": "diamond",
     "other": "dot",
     "unknown": "dot",
@@ -481,6 +498,7 @@ def graph_to_vis_payload(graph: nx.DiGraph) -> Tuple[List[Dict[str, Any]], List[
             "id": n_id,
             "label": data.get("label", n_id),
             "title": data.get("title", n_id),
+            "kind": data.get("kind", data.get("group", "unknown")),
             "group": data.get("group", data.get("kind", "unknown")),
             "shape": data.get("shape", "dot"),
             "color": data.get("color"),
@@ -526,6 +544,112 @@ def _safe_json_embed(data: Any) -> str:
     return raw.replace("<", "\\u003c").replace("</", "\\u003c/")
 
 
+def _relationship_map_svg(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]) -> str:
+    """Render a fixed-layout, print-friendly relationship map.
+
+    The layout is intentionally deterministic: the target is centred and all
+    observed entities are positioned around it. This avoids force-directed
+    movement, overlapping controls, and browser-dependent presentation in an
+    evidentiary review artifact.
+    """
+    width = 980
+    height = 640
+    centre_x = width // 2
+    centre_y = height // 2
+    target = next((node for node in nodes if node.get("id") == "target"), None)
+    others = [node for node in nodes if node.get("id") != "target"]
+    positions: Dict[str, Tuple[float, float]] = {}
+    if target:
+        positions[str(target["id"])] = (centre_x, centre_y)
+    count = max(len(others), 1)
+    for index, node in enumerate(others):
+        angle = (2 * math.pi * index / count) - (math.pi / 2)
+        positions[str(node["id"])] = (
+            centre_x + 330 * math.cos(angle),
+            centre_y + 220 * math.sin(angle),
+        )
+
+    edge_markup = []
+    for edge in edges:
+        source = positions.get(str(edge.get("from")))
+        destination = positions.get(str(edge.get("to")))
+        if not source or not destination:
+            continue
+        label = html.escape(str(edge.get("label", "related to")))
+        label_x = (source[0] + destination[0]) / 2
+        label_y = (source[1] + destination[1]) / 2
+        label_width = max(48, min(130, len(str(edge.get("label", ""))) * 6.5 + 18))
+        edge_markup.append(
+            f'<line x1="{source[0]:.1f}" y1="{source[1]:.1f}" '
+            f'x2="{destination[0]:.1f}" y2="{destination[1]:.1f}" '
+            'class="relation" marker-end="url(#arrow)"/>'
+            f'<rect x="{label_x - label_width / 2:.1f}" y="{label_y - 11:.1f}" '
+            f'width="{label_width:.1f}" height="20" rx="4" class="relation-label-bg"/>'
+            f'<text x="{label_x:.1f}" y="{label_y:.1f}" class="relation-label">{label}</text>'
+        )
+
+    def node_shape(shape: str, x: float, y: float) -> str:
+        """Return entity-specific SVG geometry centred on ``x, y``."""
+        if shape == "triangle":
+            return f'<polygon points="{x:.1f},{y - 38:.1f} {x + 43:.1f},{y + 34:.1f} {x - 43:.1f},{y + 34:.1f}"/>'
+        if shape == "diamond":
+            return f'<polygon points="{x:.1f},{y - 40:.1f} {x + 45:.1f},{y:.1f} {x:.1f},{y + 40:.1f} {x - 45:.1f},{y:.1f}"/>'
+        if shape == "star":
+            points = []
+            for point_index in range(10):
+                angle = (-math.pi / 2) + point_index * math.pi / 5
+                radius = 42 if point_index % 2 == 0 else 19
+                points.append(f"{x + radius * math.cos(angle):.1f},{y + radius * math.sin(angle):.1f}")
+            return f'<polygon points="{" ".join(points)}"/>'
+        if shape == "square":
+            return f'<rect x="{x - 38:.1f}" y="{y - 38:.1f}" width="76" height="76" rx="5"/>'
+        if shape == "box":
+            return f'<rect x="{x - 58:.1f}" y="{y - 34:.1f}" width="116" height="68" rx="9"/>'
+        if shape == "hexagon":
+            return (
+                f'<polygon points="{x - 43:.1f},{y:.1f} {x - 22:.1f},{y - 37:.1f} '
+                f'{x + 22:.1f},{y - 37:.1f} {x + 43:.1f},{y:.1f} '
+                f'{x + 22:.1f},{y + 37:.1f} {x - 22:.1f},{y + 37:.1f}"/>'
+            )
+        if shape == "ellipse":
+            return f'<ellipse cx="{x:.1f}" cy="{y:.1f}" rx="51" ry="35"/>'
+        return f'<circle cx="{x:.1f}" cy="{y:.1f}" r="38"/>'
+
+    node_markup = []
+    for node in nodes:
+        node_id = str(node["id"])
+        x, y = positions.get(node_id, (centre_x, centre_y))
+        full_label = str(node.get("label", node_id))
+        display_label = full_label if len(full_label) <= 25 else full_label[:22] + "…"
+        label = html.escape(display_label)
+        kind_value = str(node.get("kind", "other")).lower()
+        kind = html.escape(kind_value.replace("_", " ").upper())
+        shape = str(node.get("shape") or ENTITY_SHAPES.get(kind_value, "dot"))
+        color = str(node.get("color") or ENTITY_COLORS.get(kind_value, ENTITY_COLORS["other"]))
+        is_target = node_id == "target"
+        css_class = "map-node target-node" if is_target else "map-node"
+        node_markup.append(
+            f'<g class="{css_class}" style="--node-color:{html.escape(color)}">'
+            f'<title>{html.escape(full_label)} — {kind}</title>'
+            f'<g class="node-shape">{node_shape(shape, x, y)}</g>'
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="10" class="node-core"/>'
+            f'<text x="{x:.1f}" y="{y + 58:.1f}" class="node-label">{label}</text>'
+            f'<text x="{x:.1f}" y="{y + 75:.1f}" class="node-kind">{kind}</text>'
+            '</g>'
+        )
+
+    return f'''<svg class="relationship-map" viewBox="0 0 {width} {height}" role="img" aria-label="Evidence relationship map">
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#172036" stroke-width=".7"/></pattern>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z"/></marker>
+  </defs>
+  <rect width="{width}" height="{height}" class="map-background"/>
+  <rect width="{width}" height="{height}" fill="url(#grid)"/>
+  {''.join(edge_markup)}
+  {''.join(node_markup)}
+</svg>'''
+
+
 def render_fallback_html(
     output_path: Path,
     graph: nx.DiGraph,
@@ -534,10 +658,20 @@ def render_fallback_html(
 ) -> None:
     nodes, edges = graph_to_vis_payload(graph)
     timeline_markup = timeline_html(timeline)
+    relationship_map = _relationship_map_svg(nodes, edges)
+    observed_kinds = sorted({
+        str(node.get("kind", "other")).lower()
+        for node in nodes
+    })
+    legend_markup = "".join(
+        f'<span><i class="legend-shape" style="--legend-color:{ENTITY_COLORS.get(kind, ENTITY_COLORS["other"])}"></i>'
+        f'{html.escape(kind.replace("_", " "))}</span>'
+        for kind in observed_kinds
+    )
 
-    # Keep generated evidence artifacts self-contained.  A static SVG is less
-    # feature-rich than a JavaScript graph, but it is deterministic, works
-    # without network access, and cannot load a remote dependency.
+    # Keep generated evidence artifacts self-contained and suitable for review
+    # or printing. The fixed SVG layout deliberately avoids animated or
+    # force-directed behaviour.
     node_markup = "".join(
         f'<li><code>{html.escape(str(node["id"]))}</code> — '
         f'{html.escape(str(node["label"]))}</li>'
@@ -558,32 +692,52 @@ def render_fallback_html(
   <title>{html.escape(title)}</title>
   <style>
     :root {{ color-scheme: dark; }}
-    body {{ margin: 0; font-family: Arial, sans-serif; background: #0b1020; color: #e5e7eb; }}
-    .wrap {{ display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px; min-height: 100vh; box-sizing: border-box; }}
-    .panel {{ background: #111827; border: 1px solid #243043; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.25); }}
-    .panel h1, .panel h2 {{ margin: 0; padding: 14px 16px; border-bottom: 1px solid #243043; }}
-    #network {{ min-height: 760px; padding: 16px; box-sizing: border-box; overflow: auto; }}
-    .graph-list {{ display: grid; gap: 14px; }}
+    body {{ margin: 0; font-family: Inter, "Segoe UI", Arial, sans-serif; background: #030712; color: #dbe5f2; }}
+    .wrap {{ max-width: 1480px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(300px, .9fr); gap: 20px; padding: 24px; box-sizing: border-box; }}
+    .panel {{ background: #0b1120; border: 1px solid #23304a; border-radius: 10px; overflow: hidden; box-shadow: 0 18px 50px rgba(0,0,0,.28); }}
+    .panel h1, .panel h2 {{ margin: 0; padding: 15px 20px; border-bottom: 1px solid #23304a; font-weight: 600; }}
+    .panel h1 {{ font-size: 22px; letter-spacing: .01em; background: #101a2f; color: #f8fafc; }}
+    .panel h2 {{ font-size: 16px; color: #dbeafe; background: #101827; }}
+    #network {{ padding: 20px; box-sizing: border-box; overflow: auto; }}
+    .relationship-map {{ display: block; width: 100%; min-width: 720px; border: 1px solid #23304a; border-radius: 8px; background: #050914; }}
+    .map-background {{ fill: #050914; }}
+    .relation {{ stroke: #52627a; stroke-width: 1.4; }}
+    #arrow {{ fill: #64748b; }}
+    .relation-label-bg {{ fill: #0b1220; stroke: #293750; stroke-width: 1; }}
+    .relation-label {{ fill: #b6c5d8; font: 600 10px Arial, sans-serif; text-anchor: middle; dominant-baseline: middle; }}
+    .node-shape > * {{ fill: #0b1220; stroke: var(--node-color); stroke-width: 2.4; }}
+    .node-core {{ fill: var(--node-color); stroke: #dbeafe; stroke-width: 1.4; }}
+    .target-node .node-shape > * {{ fill: color-mix(in srgb, var(--node-color) 22%, #0b1220); stroke-width: 3; }}
+    .node-label {{ fill: #f1f5f9; font: 600 13px Arial, sans-serif; text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: #050914; stroke-width: 4px; stroke-linejoin: round; }}
+    .node-kind {{ fill: var(--node-color); font: 700 9px Arial, sans-serif; text-anchor: middle; letter-spacing: .12em; }}
+    .graph-list {{ display: grid; gap: 18px; margin-top: 20px; }}
+    .graph-list h2 {{ font-size: 15px; margin: 0; padding-bottom: 7px; border-bottom: 1px solid #23304a; color: #dbeafe; }}
     .graph-list ul {{ margin: 0; padding-left: 20px; }}
     .side {{ display: flex; flex-direction: column; }}
     .side .content {{ padding: 16px; overflow: auto; }}
-    .meta {{ font-size: 14px; line-height: 1.5; color: #cbd5e1; margin-bottom: 14px; }}
+    .meta {{ font-size: 13px; line-height: 1.5; color: #94a3b8; margin-bottom: 14px; }}
     .timeline-list {{ padding-left: 18px; margin: 0; display: grid; gap: 12px; }}
     .timeline-list li {{ line-height: 1.45; }}
-    .timeline-list code {{ background: #1f2937; padding: 2px 6px; border-radius: 999px; }}
-    .timeline-empty {{ color: #94a3b8; }}
-    .legend {{ display: grid; gap: 8px; margin-top: 16px; font-size: 13px; color: #cbd5e1; }}
+    .timeline-list code, .graph-list code {{ background: #111c31; border: 1px solid #22314b; padding: 2px 5px; border-radius: 3px; color: #bae6fd; font-family: ui-monospace, monospace; }}
+    .timeline-empty {{ color: #64748b; }}
+    .legend {{ display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 18px; font-size: 12px; color: #aebdd0; }}
     .legend span {{ display: inline-flex; align-items: center; gap: 8px; }}
-    .dot {{ width: 10px; height: 10px; border-radius: 999px; display: inline-block; }}
+    .legend-shape {{ width: 10px; height: 10px; transform: rotate(45deg); border: 2px solid var(--legend-color); background: color-mix(in srgb, var(--legend-color) 25%, transparent); display: inline-block; }}
+    @media (max-width: 980px) {{ .wrap {{ grid-template-columns: 1fr; padding: 12px; }} }}
+    @media print {{ body {{ background:#fff; }} .wrap {{ display:block; max-width:none; padding:0; }} .panel {{ break-inside:avoid; box-shadow:none; margin-bottom:12px; }} }}
   </style>
 </head>
 <body>
   <div class="wrap">
     <section class="panel">
       <h1>{html.escape(title)}</h1>
-      <div id="network" class="graph-list">
+      <div id="network">
+        <div class="meta">Relationship map generated from the normalized evidence record. Node placement is fixed for consistent review and print output.</div>
+        {relationship_map}
+        <div class="graph-list">
         <h2>Entities</h2><ul>{node_markup}</ul>
         <h2>Relationships</h2><ul>{edge_markup}</ul>
+        </div>
       </div>
     </section>
     <aside class="panel side">
@@ -592,12 +746,7 @@ def render_fallback_html(
         <div class="meta">Events were read from <code>raw_scan.json</code> and attached to the graph as event nodes.</div>
         {timeline_markup}
         <div class="legend">
-          <span><i class="dot" style="background:#2563eb"></i>domain</span>
-          <span><i class="dot" style="background:#1d4ed8"></i>subdomain</span>
-          <span><i class="dot" style="background:#0f766e"></i>ip</span>
-          <span><i class="dot" style="background:#c2410c"></i>email</span>
-          <span><i class="dot" style="background:#be185d"></i>social_profile</span>
-          <span><i class="dot" style="background:#6b7280"></i>event</span>
+          {legend_markup}
         </div>
       </div>
     </aside>
@@ -614,7 +763,17 @@ def render_pyvis_html(
     timeline: List[Dict[str, Any]],
     title: str,
 ) -> None:
-    net = Network(height="760px", width="100%", bgcolor="#0b1020", font_color="#e5e7eb", directed=True, heading=title)
+    # Inline vis-network so the artifact remains interactive when opened from
+    # disk and never requires a CDN or a companion ``lib/`` directory.
+    net = Network(
+        height="760px",
+        width="100%",
+        bgcolor="#0b1020",
+        font_color="#e5e7eb",
+        directed=True,
+        heading=title,
+        cdn_resources="in_line",
+    )
     net.toggle_physics(True)
     net.barnes_hut(gravity=-25000, spring_length=120, damping=0.15)
 
@@ -639,6 +798,16 @@ def render_pyvis_html(
     }))
 
     html_content = net.generate_html(notebook=False)
+    # PyVis 0.3.x still injects Bootstrap resources for its optional UI even
+    # with ``cdn_resources='in_line'``. They are not required for rendering
+    # the network and would make a local artifact depend on the network.
+    html_content = re.sub(
+        r'<script[^>]+src=["\']https?://[^>]+>\s*</script>|'
+        r'<link[^>]+href=["\']https?://[^>]*>',
+        "",
+        html_content,
+        flags=re.IGNORECASE,
+    )
     if "<title>" not in html_content:
         html_content = html_content.replace("<head>", f"<head>\n<title>{html.escape(title)}</title>")
     if "<h1></h1>" in html_content:

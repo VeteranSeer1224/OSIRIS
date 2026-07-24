@@ -10,7 +10,9 @@ Usage:
     python mind_profile.py --regression              # run regression suite
 
 Environment variables:
-    DEEPSEEK_API_KEY    — required for backend=deepseek (default)
+    OPENROUTER_API_KEY  — required for backend=openrouter
+    OPENROUTER_MODEL    — optional; defaults to openai/gpt-oss-120b
+    DEEPSEEK_API_KEY    — required for backend=deepseek
     OPENAI_API_KEY      — required for backend=openai
     ANTHROPIC_API_KEY   — required for backend=anthropic
     OLLAMA_HOST         — defaults to http://localhost:11434
@@ -49,6 +51,36 @@ except ImportError:
 # ── project paths
 _HERE = Path(__file__).parent
 _PROMPTS_DIR = _HERE.parent / "prompts"
+
+
+def _load_project_dotenv() -> None:
+    """Load repository-local .env values without overriding the process environment.
+
+    This intentionally supports only simple KEY=VALUE entries, which is enough for
+    API-key configuration without adding a runtime dependency. A shell-provided
+    environment variable always takes precedence over a value in .env.
+    """
+    dotenv_path = _HERE.parent / ".env"
+    if not dotenv_path.is_file():
+        return
+
+    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+_load_project_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -200,7 +232,7 @@ class DeepSeekBackend(LLMBackend):
             response_format={"type": "json_object"},
             max_tokens=2048,
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content or ""
 
     def metadata(self) -> Dict[str, Any]:
         return {"backend": self.name, "model": self.model, "base_url": self.BASE_URL}
@@ -228,7 +260,7 @@ class AnthropicBackend(LLMBackend):
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
         )
-        return response.content[0].text
+        return str(response.content[0].text)
 
     def metadata(self) -> Dict[str, Any]:
         return {"backend": self.name, "model": self.model}
@@ -267,10 +299,53 @@ class OpenAIBackend(LLMBackend):
             temperature=0.2,
             response_format={"type": "json_object"},
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content or ""
 
     def metadata(self) -> Dict[str, Any]:
         return {"backend": self.name, "model": self.model}
+
+
+class OpenRouterBackend(LLMBackend):
+    """Uses OpenRouter's OpenAI-compatible API for routed model access."""
+
+    name = "openrouter_api"
+    BASE_URL = "https://openrouter.ai/api/v1"
+    DEFAULT_MODEL = "openai/gpt-oss-120b"
+
+    def __init__(self, model: Optional[str] = None):
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "OpenRouter backend requires the OpenAI SDK.\n"
+                "Install with:\n"
+                "pip install openai"
+            ) from exc
+
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise EnvironmentError(
+                "OPENROUTER_API_KEY not set. Add it to .env or your environment."
+            )
+        self.client = OpenAI(api_key=api_key, base_url=self.BASE_URL)
+        self.model = model or os.getenv("OPENROUTER_MODEL", self.DEFAULT_MODEL)
+
+    def call(self, system_prompt: str, user_message: str) -> str:
+        # Not every OpenRouter model/provider supports OpenAI JSON mode. The
+        # OSIRIS prompt and response validator still require a JSON dossier.
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.2,
+            max_tokens=2048,
+        )
+        return response.choices[0].message.content or ""
+
+    def metadata(self) -> Dict[str, Any]:
+        return {"backend": self.name, "model": self.model, "base_url": self.BASE_URL}
 
 
 class OllamaBackend(LLMBackend):
@@ -301,7 +376,7 @@ class OllamaBackend(LLMBackend):
             timeout=180,
         )
         resp.raise_for_status()
-        return resp.json()["message"]["content"]
+        return str(resp.json()["message"]["content"])
 
     def metadata(self) -> Dict[str, Any]:
         return {"backend": self.name, "model": self.model, "host": self.host}
@@ -311,6 +386,7 @@ def get_backend(name: str, model: Optional[str] = None) -> LLMBackend:
     backends = {
         "deepseek":  DeepSeekBackend,
         "openai":    OpenAIBackend,
+        "openrouter": OpenRouterBackend,
         "anthropic": AnthropicBackend,
         "ollama":    OllamaBackend,
     }
@@ -371,6 +447,8 @@ def parse_and_validate(raw_text: str, target: str) -> Dict[str, Any]:
         else:
             raise ValueError(f"LLM returned non-JSON output: {exc}\n\nRaw:\n{raw_text[:500]}")
 
+    if not isinstance(data, dict):
+        raise ValueError("LLM dossier root must be a JSON object")
     missing_root = _REQUIRED_KEYS - set(data.keys())
     if missing_root:
         raise ValueError(f"Dossier missing required keys: {missing_root}")
@@ -1023,10 +1101,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--input",    "-i", help="Path to raw_scan.json (Contract 1 input)")
     p.add_argument("--output",   "-o", help="Path to write dossier.json (Contract 2 output)")
     p.add_argument("--backend",  "-b", default="ollama",
-                   choices=["deepseek", "openai", "anthropic", "ollama"],
+                   choices=["deepseek", "openai", "openrouter", "anthropic", "ollama"],
                    help="LLM backend to use (default: ollama)")
     p.add_argument("--model",    "-m", default=None,
-                   help="Model name override (e.g. deepseek-chat, deepseek-reasoner, gpt-4o, llama3.2)")
+                   help="Model name override (e.g. openai/gpt-oss-120b, deepseek-chat, gpt-4o, llama3.2)")
     p.add_argument("--prompt",   "-p", default="v2",
                    choices=["v1", "v2"],
                    help="Prompt version to use (default: v2)")

@@ -103,8 +103,25 @@ def test_render_graph_writes_html(sample_raw_scan: Dict[str, Any], output_path: 
     html_content = output_path.read_text(encoding="utf-8")
     assert "Test Graph" in html_content
     assert "raw_scan.json" in html_content or "vis-network" in html_content
+    assert "Evidence relationship map" in html_content
+    assert "color-scheme: dark" in html_content
+    assert ">DOMAIN</text>" in html_content
+    assert ">IP</text>" in html_content
+    assert ">EMAIL</text>" in html_content
     assert "https://" not in html_content
     assert "http://" not in html_content
+
+
+def test_graph_payload_preserves_entity_kind_and_style(sample_raw_scan: Dict[str, Any]) -> None:
+    graph, _ = graph_build.build_graph(sample_raw_scan)
+    nodes, _ = graph_utils.graph_to_vis_payload(graph)
+    by_id = {node["id"]: node for node in nodes}
+
+    assert by_id["target"]["kind"] == "target"
+    assert by_id["domain:example.com"]["kind"] == "domain"
+    assert by_id["ip:93.184.216.34"]["shape"] == "triangle"
+    assert by_id["email:admin@example.com"]["shape"] == "box"
+    assert by_id["email:admin@example.com"]["color"] != by_id["domain:example.com"]["color"]
 
 
 def test_graph_utils_social_profile_parsing() -> None:

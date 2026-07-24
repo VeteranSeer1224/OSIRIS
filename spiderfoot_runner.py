@@ -16,6 +16,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 # Ensure OSIRIS/spiderfoot is in sys.path
 _SF_DIR = Path(__file__).resolve().parent / "spiderfoot"
@@ -23,7 +24,7 @@ if str(_SF_DIR) not in sys.path:
     sys.path.insert(0, str(_SF_DIR))
 
 try:
-    from spiderfoot import SpiderFootDb, SpiderFootHelpers
+    from spiderfoot import SpiderFootDb, SpiderFootHelpers  # type: ignore[attr-defined]
     from spiderfoot.logger import logListenerSetup, logWorkerSetup
     from sflib import SpiderFoot
     from sfscan import startSpiderFootScanner
@@ -135,7 +136,12 @@ STREAMLINED_MODULES = {
 }
 
 
-def run_scan(target: str, output_file: str | Path, modules: str | list = None, use_case: str = None) -> Path:
+def run_scan(
+    target: str,
+    output_file: str | Path,
+    modules: str | list[Any] | None = None,
+    use_case: str | None = None,
+) -> Path:
     output_file = Path(output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -157,7 +163,7 @@ def run_scan(target: str, output_file: str | Path, modules: str | list = None, u
         '_socks1type': '',
     }
 
-    loggingQueue = mp.Queue()
+    loggingQueue: mp.Queue[Any] = mp.Queue()
     logListenerSetup(loggingQueue, sfConfig)
     logWorkerSetup(loggingQueue)
 

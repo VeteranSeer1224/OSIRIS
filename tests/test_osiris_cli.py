@@ -4,25 +4,35 @@ from pathlib import Path
 from osiris import main
 
 
+def _source(path):
+    path.mkdir()
+    common = {"case_id": "CASE-1", "run_id": "RUN-1"}
+    for name in ("raw_scan.json", "dossier.json", "explanation_cards.json", "lineage.json"):
+        (path / name).write_text(json.dumps(common), encoding="utf-8")
+    (path / "report.json").write_text(json.dumps({
+        "report_metadata": common, "release_decision": {"status": "BLOCKED"},
+    }), encoding="utf-8")
+
+
 def test_cli_builds_and_verifies_capsule(tmp_path, capsys):
     source = tmp_path / "source"
-    source.mkdir()
-    (source / "report.json").write_text("{}", encoding="utf-8")
+    _source(source)
     key = tmp_path / "dev.pem"
-    assert main(["--json", "capsule", "keygen", str(key)]) == 0
-    assert main(["--json", "capsule", "build", "--source", str(source), "--output", str(tmp_path / "capsule"), "--case", "CASE-1", "--run", "RUN-1", "--key", str(key)]) == 0
-    assert main(["--json", "verify", str(tmp_path / "capsule")]) == 0
+    public_key = tmp_path / "dev-public.pem"
+    assert main(["--json", "capsule", "keygen", str(key), "--public-key", str(public_key)]) == 0
+    assert main(["--json", "capsule", "build", "--source", str(source), "--output", str(tmp_path / "capsule"), "--key", str(key)]) == 0
+    assert main(["--json", "verify", str(tmp_path / "capsule"), "--trusted-key", str(public_key)]) == 0
     outputs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert all(item["status"] == "PASS" for item in outputs)
 
 
 def test_cli_returns_nonzero_for_tampered_capsule(tmp_path):
     source = tmp_path / "source"
-    source.mkdir()
-    (source / "report.json").write_text("{}", encoding="utf-8")
+    _source(source)
     key = tmp_path / "dev.pem"
-    assert main(["capsule", "keygen", str(key)]) == 0
+    public_key = tmp_path / "dev-public.pem"
+    assert main(["capsule", "keygen", str(key), "--public-key", str(public_key)]) == 0
     capsule = tmp_path / "capsule"
-    assert main(["capsule", "build", "--source", str(source), "--output", str(capsule), "--case", "CASE-1", "--run", "RUN-1", "--key", str(key)]) == 0
+    assert main(["capsule", "build", "--source", str(source), "--output", str(capsule), "--key", str(key)]) == 0
     (capsule / "report.json").write_text("tampered", encoding="utf-8")
-    assert main(["verify", str(capsule)]) == 2
+    assert main(["verify", str(capsule), "--trusted-key", str(public_key)]) == 2

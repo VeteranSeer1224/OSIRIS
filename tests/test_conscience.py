@@ -71,7 +71,8 @@ def test_fairness_perturbation_metrics(sample_dossier: Dict[str, Any]) -> None:
     assert "avg_score_delta" in result
     assert "flagged" in result
     assert result["evaluated_variants"] == 1
-    assert result["outcome"] == "PASS"
+    assert result["outcome"] == "INCONCLUSIVE"
+    assert result["passed"] is False
     assert isinstance(result["passed"], bool)
 
 
@@ -96,7 +97,16 @@ def test_robustness_structural_variants(sample_dossier: Dict[str, Any]) -> None:
     assert result["evaluated_variants"] > 0
     assert "feature_stability" in result
     assert "decision_flipped" in result
-    assert any("removed_emails" in note for note in result["notes"])
+    assert any("missing_profile_fields" in note for note in result["notes"])
+    assert result["counterfactual_influence"]
+    assert all(
+        item["test"] in {
+            "counterfactual_evidence_deletion",
+            "all_evidence_deletion",
+            "zero_all_weights",
+        }
+        for item in result["counterfactual_influence"]
+    )
 
 
 def test_robustness_detects_feature_removal_delta() -> None:

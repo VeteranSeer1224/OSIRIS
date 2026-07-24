@@ -1,3 +1,5 @@
+import pytest
+
 from sense_clean import generate_raw_scan
 
 
@@ -23,6 +25,17 @@ def test_unknown_entities_preserved():
     assert len(
         scan["raw_module_output"]["unknown_entities"]
     ) == 1
+
+
+def test_pre_normalized_target_mismatch_is_rejected():
+    normalized = {
+        "target": "victim.example.net",
+        "scan_date": "2026-01-01T00:00:00Z",
+        "entities": [{"type": "domain", "value": "victim.example.net"}],
+        "events": [],
+    }
+    with pytest.raises(ValueError, match="does not match requested target"):
+        generate_raw_scan("example.com", normalized)
 
 
 def test_dns_record_normalization():

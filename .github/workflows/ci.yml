@@ -19,13 +19,21 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Pre-install pinned CPU-only PyTorch to avoid downloading 6GB of CUDA wheels in CI
-          pip install torch==2.12.1+cpu --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-      - name: Run tests
+          pip install -e ".[dev,report,graph]"
+      - name: Compile and test with coverage
         run: |
           python -m compileall -q .
-          pytest -v
+          coverage run -m pytest -q
+          coverage report -m
+      - name: Static and security checks
+        run: |
+          ruff check .
+          mypy
+          bandit -q -r . -x ./.venv,./build,./osiris_evidence_platform.egg-info,./tests,./spiderfoot
+          pip-audit
+      - name: Build installable wheel
+        run: python -m pip wheel . --no-deps --wheel-dir dist
       - name: Verify local evidence CLI surface
         run: |
           python osiris.py --json --help
+          osiris --json demo conference --output /tmp/osiris-demo

@@ -1,5 +1,6 @@
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from release_policy import ReleaseBlockedError
-from run_pipeline import pipeline_from_existing_scan
+import run_pipeline
+from run_pipeline import pipeline_from_existing_scan, pipeline_with_spiderfoot
 from schema_validation import validate_explanation_cards
 
 
@@ -91,3 +93,39 @@ def test_stub_pipeline_cannot_export_misp(tmp_path):
             mind_dry_run=True,
             skip_graph=True,
         )
+
+
+def test_active_authorization_survives_spiderfoot_pipeline(tmp_path, monkeypatch):
+    now = datetime.now(timezone.utc)
+    authorization = {
+        "schema_version": "1.0", "case_id": "CASE-ACTIVE", "title": "Active test",
+        "purpose": "authorized fixture", "jurisdiction": "IN",
+        "created_at": now.isoformat(), "created_by": "tester",
+        "authorization_reference": "AUTH-ACTIVE",
+        "authorization_document_hash": "sha256:" + "a" * 64,
+        "allowed_collection_modes": ["active"], "active_scanning_authorized": True,
+        "authorized_targets": ["example.test"], "excluded_targets": [],
+        "valid_from": (now - timedelta(minutes=1)).isoformat(),
+        "expires_at": (now + timedelta(hours=1)).isoformat(),
+        "data_retention_policy": "test", "handling_marking": "TLP:CLEAR",
+        "approvers": ["approver"], "status": "APPROVED",
+    }
+    auth_path = tmp_path / "authorization.json"
+    auth_path.write_text(json.dumps(authorization), encoding="utf-8")
+
+    def fake_scan(target, output_file, modules=None, use_case=None):
+        Path(output_file).write_text(json.dumps([
+            {"type": "DOMAIN_NAME", "data": target, "module": "fixture"}
+        ]), encoding="utf-8")
+        return output_file
+
+    monkeypatch.setattr(run_pipeline, "run_spiderfoot_scan", fake_scan)
+    results = pipeline_with_spiderfoot(
+        "example.test", tmp_path / "output", skip_graph=True,
+        case_authorization_path=auth_path,
+    )
+    report = json.loads(Path(results["report"]).read_text(encoding="utf-8"))
+    lineage = json.loads(Path(results["lineage"]).read_text(encoding="utf-8"))
+    assert report["report_metadata"]["case_id"] == "CASE-ACTIVE"
+    assert report["case_authorization"]["case_id"] == "CASE-ACTIVE"
+    assert lineage["case_id"] == "CASE-ACTIVE"

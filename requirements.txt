@@ -1,9 +1,13 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
+# Ensure the build frontend and local audit environment do not retain known
+# vulnerable releases.
+setuptools==83.0.0
+
 # ── Core pipeline dependencies (pinned for reproducibility) ──────────────
 jsonschema==4.26.0
 pydantic==2.13.4
-cryptography==3.4.8
+cryptography==49.0.0
 networkx==3.6.1
 requests==2.34.2
 tldextract==5.3.1
@@ -16,11 +20,12 @@ openai==2.44.0                  # DeepSeek + OpenAI backends (both use the OpenA
 pyvis==0.3.2
 
 # ── Stage 4: OSIRIS-Conscience (explainability) ─────────────────────────
-torch==2.12.1+cpu               # Pinned CPU wheel (~192MB) avoids 6GB CUDA downloads
+torch==2.13.0+cpu               # Pinned CPU wheel (~192MB) avoids 6GB CUDA downloads
 explabox==1.0.3                 # Explainability library
 
 # ── Stage 5: OSIRIS-Report (PDF export) ──────────────────────────────────
 weasyprint==69.0                # Requires system libs: libpango-1.0-0, libpangocairo-1.0-0
+Pillow==12.3.0
                                 # Install via: sudo apt install libpango-1.0-0 libpangocairo-1.0-0
 
 # ── Testing ──────────────────────────────────────────────────────────────

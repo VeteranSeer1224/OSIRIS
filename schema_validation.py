@@ -1,4 +1,6 @@
-from jsonschema import validate, ValidationError
+from typing import Any, cast
+
+from jsonschema import ValidationError, validate
 
 
 RAW_SCAN_SCHEMA = {
@@ -123,7 +125,7 @@ XAI_AUDIT_SCHEMA = {
         "card_count": {"type": "integer", "minimum": 0},
         "overall_fairness_passed": {"type": "boolean"},
         "overall_robustness_passed": {"type": "boolean"},
-        "cards": EXPLANATION_CARDS_SCHEMA["properties"]["cards"],
+        "cards": cast(dict[str, Any], EXPLANATION_CARDS_SCHEMA["properties"])["cards"],
     },
 }
 

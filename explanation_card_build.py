@@ -330,7 +330,7 @@ def _build_card_from_analysis(dossier: Mapping[str, Any], analysis: Mapping[str,
         "explanation": _safe_str(explain.get("explanation", "")),
         "confidence": float(explain.get("confidence", 1.0)),
         "fairness_check": {
-            "passed": bool(fairness.get("passed", True)),
+            "passed": fairness.get("passed") is True,
             "flagged": bool(fairness.get("flagged", False)),
             "notes": _summarize_notes(fairness.get("notes", [])),
             "max_score_delta": fairness.get("max_score_delta", 0),
@@ -339,7 +339,7 @@ def _build_card_from_analysis(dossier: Mapping[str, Any], analysis: Mapping[str,
             "evaluated_variants": fairness.get("evaluated_variants", 0),
         },
         "robustness_check": {
-            "passed": bool(robustness.get("passed", True)),
+            "passed": robustness.get("passed") is True,
             "notes": _summarize_notes(robustness.get("notes", [])),
             "max_score_delta": robustness.get("max_score_delta", 0),
             "avg_score_delta": robustness.get("avg_score_delta", 0),
@@ -370,7 +370,7 @@ def _build_fairness_report(cards: Sequence[Mapping[str, Any]], analyses: Sequenc
         lines.append(f"## Card {idx}: {_safe_str(card.get('entity'), 'unknown')}")
         lines.append("")
         lines.append(f"- Risk score: `{card.get('risk_score', 0)}`")
-        lines.append(f"- Passed: `{bool(fairness.get('passed', True))}`")
+        lines.append(f"- Passed: `{fairness.get('passed') is True}`")
         lines.append(f"- Flagged: `{bool(fairness.get('flagged', False))}`")
         lines.append(f"- Max score delta: `{fairness.get('max_score_delta', 0)}`")
         lines.append(f"- Avg score delta: `{fairness.get('avg_score_delta', 0)}`")
@@ -405,7 +405,7 @@ def _build_robustness_report(cards: Sequence[Mapping[str, Any]], analyses: Seque
         lines.append(f"## Card {idx}: {_safe_str(card.get('entity'), 'unknown')}")
         lines.append("")
         lines.append(f"- Risk score: `{card.get('risk_score', 0)}`")
-        lines.append(f"- Passed: `{bool(robustness.get('passed', True))}`")
+        lines.append(f"- Passed: `{robustness.get('passed') is True}`")
         lines.append(f"- Decision flipped: `{bool(robustness.get('decision_flipped', False))}`")
         lines.append(f"- Max score delta: `{robustness.get('max_score_delta', 0)}`")
         lines.append(f"- Avg score delta: `{robustness.get('avg_score_delta', 0)}`")
@@ -426,11 +426,11 @@ def _build_robustness_report(cards: Sequence[Mapping[str, Any]], analyses: Seque
 def _build_fairness_report_json(cards: Sequence[Mapping[str, Any]], analyses: Sequence[Mapping[str, Any]], target_label: str) -> JSONDict:
     """Structured JSON fairness report."""
     per_card: List[JSONDict] = []
-    all_passed = True
+    all_passed = bool(cards)
     for card, analysis in zip(cards, analyses):
         expose = analysis.get("expose", {}) if _is_mapping(analysis.get("expose")) else {}
         fairness = expose.get("fairness", {}) if _is_mapping(expose.get("fairness")) else {}
-        passed = bool(fairness.get("passed", True))
+        passed = fairness.get("passed") is True
         if not passed:
             all_passed = False
         per_card.append({
@@ -457,11 +457,11 @@ def _build_fairness_report_json(cards: Sequence[Mapping[str, Any]], analyses: Se
 def _build_robustness_report_json(cards: Sequence[Mapping[str, Any]], analyses: Sequence[Mapping[str, Any]], target_label: str) -> JSONDict:
     """Structured JSON robustness report."""
     per_card: List[JSONDict] = []
-    all_passed = True
+    all_passed = bool(cards)
     for card, analysis in zip(cards, analyses):
         expose = analysis.get("expose", {}) if _is_mapping(analysis.get("expose")) else {}
         robustness = expose.get("robustness", {}) if _is_mapping(expose.get("robustness")) else {}
-        passed = bool(robustness.get("passed", True))
+        passed = robustness.get("passed") is True
         if not passed:
             all_passed = False
         per_card.append({

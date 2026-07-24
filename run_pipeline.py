@@ -1,7 +1,8 @@
 import argparse
 import hashlib
 import json
-import subprocess
+# Fixed local runner invocation; shell execution is never used.
+import subprocess  # nosec B404
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -87,7 +88,8 @@ def run_spiderfoot_scan(target, output_file, modules=None, use_case=None):
     if use_case:
         command.extend(["-u", use_case])
 
-    result = subprocess.run(
+    # The argv contains a fixed local script and validated options.
+    result = subprocess.run(  # nosec B603
         command,
         capture_output=True,
         text=True
@@ -111,6 +113,9 @@ def pipeline_from_existing_scan(
     skip_graph=False,
     do_export_dashboard=False,
     case_authorization_path=None,
+    collection_mode=CollectionMode.PASSIVE,
+    mind_backend="ollama",
+    mind_model=None,
 ):
     """Run Sense → Mind → Web → Conscience → Report."""
     check_ethics_gate()
@@ -121,7 +126,7 @@ def pipeline_from_existing_scan(
     if case_authorization_path:
         try:
             authorization = load_case_authorization(case_authorization_path)
-            validate_collection(authorization, target, CollectionMode.PASSIVE)
+            validate_collection(authorization, target, collection_mode)
         except AuthorizationError as exc:
             raise PipelineError(f"Case authorization failed: {exc}") from exc
     case_id = authorization.case_id if authorization else "UNAUTHORIZED-LEGACY"
@@ -149,6 +154,8 @@ def pipeline_from_existing_scan(
     dossier = profile(
         raw_scan_path=str(raw_scan_path),
         output_path=str(dossier_path),
+        backend_name=mind_backend,
+        model=mind_model,
         dry_run=mind_dry_run,
     )
     dossier["case_id"] = case_id
@@ -194,11 +201,7 @@ def pipeline_from_existing_scan(
 
     results = {
         "raw_evidence": str(output_dir / raw_record.relative_path),
-        "raw_evidence_metadata": str(
-            (output_dir / raw_record.relative_path).with_suffix(
-                (output_dir / raw_record.relative_path).suffix + ".metadata.json"
-            )
-        ),
+        "raw_evidence_metadata": str(output_dir / raw_record.observation_path),
         "raw_scan": str(raw_scan_path),
         "dossier": str(dossier_path),
         "explanation_cards": str(conscience_paths["explanation_cards"]),
@@ -269,6 +272,8 @@ def pipeline_with_spiderfoot(
     modules=None,
     use_case=None,
     case_authorization_path=None,
+    mind_backend="ollama",
+    mind_model=None,
 ):
     if not case_authorization_path:
         raise PipelineError(
@@ -299,9 +304,13 @@ def pipeline_with_spiderfoot(
         output_dir,
         do_export_pdf,
         do_export_misp,
-        mind_dry_run,
-        skip_graph,
-        do_export_dashboard,
+        mind_dry_run=mind_dry_run,
+        mind_backend=mind_backend,
+        mind_model=mind_model,
+        skip_graph=skip_graph,
+        do_export_dashboard=do_export_dashboard,
+        case_authorization_path=case_authorization_path,
+        collection_mode=CollectionMode.ACTIVE,
     )
 
 
@@ -357,6 +366,18 @@ def main():
     )
 
     parser.add_argument(
+        "--mind-backend",
+        default="ollama",
+        choices=["deepseek", "openai", "openrouter", "anthropic", "ollama"],
+        help="LLM backend for live Stage 2 runs (default: ollama)",
+    )
+
+    parser.add_argument(
+        "--mind-model",
+        help="Optional model override for the selected Stage 2 backend",
+    )
+
+    parser.add_argument(
         "--skip-graph",
         action="store_true",
         help="Skip Stage 3 graph.html generation",
@@ -383,6 +404,8 @@ def main():
                 args.export_pdf,
                 args.export_misp,
                 mind_dry_run=not args.mind_live,
+                mind_backend=args.mind_backend,
+                mind_model=args.mind_model,
                 skip_graph=args.skip_graph,
                 do_export_dashboard=args.export_dashboard,
                 case_authorization_path=args.case_authorization,
@@ -394,6 +417,8 @@ def main():
                 args.export_pdf,
                 args.export_misp,
                 mind_dry_run=not args.mind_live,
+                mind_backend=args.mind_backend,
+                mind_model=args.mind_model,
                 skip_graph=args.skip_graph,
                 do_export_dashboard=args.export_dashboard,
                 modules=args.modules,

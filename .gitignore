@@ -7,3 +7,6 @@ dashboard/node_modules/
 .venv/
 spiderfoot/
 outputs/
+.env
+.env.*
+!.env.example

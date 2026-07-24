@@ -280,8 +280,10 @@ def generate_raw_scan(target, spiderfoot_input):
     # If the input is already a processed raw_scan dict (e.g. outputs/raw_scan.json),
     # validate and return it directly instead of re-processing it as SpiderFoot data.
     if isinstance(raw_data, dict) and "entities" in raw_data:
+        from case_authorization import require_same_target
         from schema_validation import validate_raw_scan
         validate_raw_scan(raw_data)
+        require_same_target(target, str(raw_data.get("target", "")))
         return raw_data
 
     entities, unknown_entities = normalize_entities(raw_data)

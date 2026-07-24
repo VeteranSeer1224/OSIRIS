@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from schema_validation import validate_report
-from release_policy import evaluate_release, require_release
+from release_policy import ReleaseContext, evaluate_release, require_release
 import logging
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ def build_summary(scan):
     entities = scan.get("entities", [])
     events = scan.get("events", [])
 
-    entity_counter = Counter()
+    entity_counter: Counter[str] = Counter()
 
     for entity in entities:
         entity_counter[entity["type"]] += 1
@@ -67,7 +67,7 @@ CATEGORY_FEATURE_MAP = {
 def build_findings(scan, dossier=None, explanation_cards=None):
     findings = []
     entities = scan.get("entities", [])
-    grouped = {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
 
     for entity in entities:
         category = classify_entity(entity)
@@ -181,7 +181,15 @@ def calculate_risk(findings):
     }
 
 
-def build_report(scan, dossier=None, explanation_cards=None, case_authorization=None, evidence_integrity=None):
+def build_report(
+    scan,
+    dossier=None,
+    explanation_cards=None,
+    case_authorization=None,
+    evidence_integrity=None,
+    *,
+    release_context: ReleaseContext | None = None,
+):
     """Build Stage 5 report. When a dossier is supplied, XAI cards are mandatory.
 
     The audit gate is checked but does NOT block report generation.
@@ -249,7 +257,7 @@ def build_report(scan, dossier=None, explanation_cards=None, case_authorization=
 
     # Every report is evaluated by the same policy.  Legacy pipeline output
     # remains available only as a clearly marked technical-review artifact.
-    report["release_decision"] = evaluate_release(report).as_dict()
+    report["release_decision"] = evaluate_release(release_context).as_dict()
 
     disclaimer_path = Path(__file__).resolve().parent / "DISCLAIMER.md"
     if disclaimer_path.exists():
@@ -316,14 +324,14 @@ def _assert_explanation_gate(dossier, explanation_cards):
             failed_conditions.append("Scoring metadata is incomplete or invalid")
 
     # Fairness check
-    fairness = matched_card.get("fairness_check", {})
-    if not fairness.get("passed", True):
-        failed_conditions.append("Fairness sensitivity test failed")
+    fairness = matched_card.get("fairness_check")
+    if not _audit_control_passed(fairness):
+        failed_conditions.append("Fairness sensitivity test missing, unevaluated, or failed")
 
     # Robustness check
-    robustness = matched_card.get("robustness_check", {})
-    if not robustness.get("passed", True):
-        failed_conditions.append("Robustness check failed")
+    robustness = matched_card.get("robustness_check")
+    if not _audit_control_passed(robustness):
+        failed_conditions.append("Robustness check missing, unevaluated, or failed")
 
     if failed_conditions:
         return {
@@ -339,6 +347,15 @@ def _assert_explanation_gate(dossier, explanation_cards):
     }
 
 
+def _audit_control_passed(control) -> bool:
+    if not isinstance(control, dict) or control.get("passed") is not True:
+        return False
+    try:
+        return int(control.get("evaluated_variants", 0)) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _build_xai_audit_section(dossier, explanation_cards):
     if explanation_cards is None:
         return None
@@ -348,11 +365,13 @@ def _build_xai_audit_section(dossier, explanation_cards):
         "schema_version": explanation_cards.get("schema_version", "1.0"),
         "generated_at": explanation_cards.get("generated_at"),
         "card_count": explanation_cards.get("card_count", len(cards)),
-        "overall_fairness_passed": all(
-            card.get("fairness_check", {}).get("passed", True) for card in cards
+        "overall_fairness_passed": bool(cards) and all(
+            isinstance(card, dict) and _audit_control_passed(card.get("fairness_check"))
+            for card in cards
         ),
-        "overall_robustness_passed": all(
-            card.get("robustness_check", {}).get("passed", True) for card in cards
+        "overall_robustness_passed": bool(cards) and all(
+            isinstance(card, dict) and _audit_control_passed(card.get("robustness_check"))
+            for card in cards
         ),
         "cards": cards,
     }
@@ -368,14 +387,19 @@ def save_json(data, path):
         json.dump(data, f, indent=4)
 
 
-def export_misp(report, output_path):
+def export_misp(
+    report,
+    output_path,
+    *,
+    release_context: ReleaseContext | None = None,
+):
     """
     Exports the report findings to a MISP-compatible JSON format.
 
     This is an external dissemination path and is never available for a
     blocked, stub, fallback, unsigned, or unauthorized report.
     """
-    require_release(report, "MISP export")
+    require_release(report, "MISP export", context=release_context)
     misp_event = {
         "Event": {
             "info": f"OSIRIS Scan - {report['summary']['target']}",
@@ -412,7 +436,12 @@ def export_misp(report, output_path):
     return output_path
 
 
-def export_pdf(report, output_path):
+def export_pdf(
+    report,
+    output_path,
+    *,
+    release_context: ReleaseContext | None = None,
+):
     """
     Exports the report to PDF using WeasyPrint.
     Falls back to a warning and basic text file if not installed.
@@ -421,7 +450,7 @@ def export_pdf(report, output_path):
     """
     import html as html_mod
     target = html_mod.escape(str(report.get("summary", {}).get("target", "Unknown")))
-    release = evaluate_release(report)
+    release = evaluate_release(release_context)
     html_content = f"<html><head><title>OSIRIS Report: {target}</title></head>"
     html_content += f"<body><h1>OSIRIS Report: {target}</h1>"
 

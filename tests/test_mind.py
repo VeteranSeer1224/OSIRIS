@@ -481,6 +481,28 @@ class TestDeepSeekBackend:
             assert "deepseek.com" in meta["base_url"]
 
 
+class TestOpenRouterBackend:
+
+    def test_openrouter_uses_expected_default_model_and_endpoint(self, monkeypatch):
+        from mind.mind_profile import OpenRouterBackend
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key")
+        monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+        import unittest.mock as mock
+        with mock.patch("openai.OpenAI") as client:
+            backend = OpenRouterBackend()
+        client.assert_called_once_with(
+            api_key="sk-or-test-key", base_url="https://openrouter.ai/api/v1"
+        )
+        assert backend.model == "openai/gpt-oss-120b"
+        assert backend.metadata()["backend"] == "openrouter_api"
+
+    def test_openrouter_requires_key(self, monkeypatch):
+        from mind.mind_profile import get_backend
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with pytest.raises(EnvironmentError, match="OPENROUTER_API_KEY"):
+            get_backend("openrouter")
+
+
 # ---------------------------------------------------------------------------
 # 10. Normalisation tests  (Person C suggestion)
 # ---------------------------------------------------------------------------

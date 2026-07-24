@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import ipaddress
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CollectionMode(str, Enum):
@@ -25,9 +27,38 @@ class AuthorizationError(ValueError):
     """Raised when collection is outside the approved case scope."""
 
 
+def canonical_target(value: str) -> str:
+    """Canonicalize an exact domain or IP target for authorization comparison."""
+    candidate = value.strip().lower().rstrip(".")
+    if not candidate:
+        raise AuthorizationError("target is empty")
+    try:
+        return ipaddress.ip_address(candidate).compressed
+    except ValueError:
+        try:
+            ascii_domain = candidate.encode("idna").decode("ascii")
+        except UnicodeError as exc:
+            raise AuthorizationError("target is not a valid domain or IP") from exc
+        if len(ascii_domain) > 253:
+            raise AuthorizationError("target is not a valid domain or IP")
+        labels = ascii_domain.split(".")
+        if any(
+            not label
+            or len(label) > 63
+            or label.startswith("-")
+            or label.endswith("-")
+            or re.fullmatch(r"[a-z0-9-]+", label) is None
+            for label in labels
+        ):
+            raise AuthorizationError("target is not a valid domain or IP")
+        return ascii_domain
+
+
 class CaseAuthorization(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     schema_version: str = "1.0"
-    case_id: str = Field(min_length=1)
+    case_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     title: str = Field(min_length=1)
     purpose: str = Field(min_length=1)
     jurisdiction: str = Field(min_length=2)
@@ -49,10 +80,17 @@ class CaseAuthorization(BaseModel):
     @field_validator("authorized_targets", "excluded_targets")
     @classmethod
     def normalize_targets(cls, targets: list[str]) -> list[str]:
-        normalized = [target.strip().lower().rstrip(".") for target in targets if target.strip()]
+        normalized = [canonical_target(target) for target in targets if target.strip()]
         if not normalized and targets:
             raise ValueError("targets must contain non-empty values")
         return normalized
+
+    @field_validator("created_at", "valid_from", "expires_at")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("authorization timestamps must include a timezone")
+        return value
 
     @model_validator(mode="after")
     def validate_active_authorization(self) -> "CaseAuthorization":
@@ -78,6 +116,13 @@ def _target_matches(target: str, scope: str) -> bool:
     return target == scope or target.endswith("." + scope)
 
 
+def require_same_target(requested: str, observed: str) -> None:
+    if canonical_target(requested) != canonical_target(observed):
+        raise AuthorizationError(
+            f"normalized input target {observed!r} does not match requested target {requested!r}"
+        )
+
+
 def validate_collection(
     authorization: CaseAuthorization,
     target: str,
@@ -91,9 +136,7 @@ def validate_collection(
         raise AuthorizationError("case status is not APPROVED")
     if current < authorization.valid_from or current >= authorization.expires_at:
         raise AuthorizationError("case authorization is outside its validity period")
-    normalized_target = target.strip().lower().rstrip(".")
-    if not normalized_target:
-        raise AuthorizationError("target is empty")
+    normalized_target = canonical_target(target)
     if any(_target_matches(normalized_target, blocked) for blocked in authorization.excluded_targets):
         raise AuthorizationError("target is explicitly excluded from authorization")
     if not any(_target_matches(normalized_target, allowed) for allowed in authorization.authorized_targets):

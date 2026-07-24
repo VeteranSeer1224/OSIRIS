@@ -98,7 +98,7 @@ def generate_dashboard_html(
 
     # Build Evidence Ledger Table
     ledger_rows = []
-    entities_by_type = {}
+    entities_by_type: dict[str, list[dict[str, Any]]] = {}
     for ent in raw_scan.get("entities", []):
         if isinstance(ent, dict):
             e_type = ent.get("type", "unknown")
@@ -218,9 +218,17 @@ def generate_dashboard_html(
 
     # Robustness criteria
     rob_crit = robustness.get("pass_criteria", {})
-    rob_delta_ok = rob_crit.get("delta_ok", robustness.get("passed", True))
+    fairness_passed = (
+        fairness.get("passed") is True
+        and _number(fairness.get("evaluated_variants"), 0) > 0
+    )
+    robustness_passed = (
+        robustness.get("passed") is True
+        and _number(robustness.get("evaluated_variants"), 0) > 0
+    )
+    rob_delta_ok = rob_crit.get("delta_ok", False)
     rob_no_flip = rob_crit.get("no_decision_flip", not robustness.get("decision_flipped", False))
-    rob_stab_ok = rob_crit.get("stability_ok", robustness.get("feature_stability", 1.0) >= 0.5)
+    rob_stab_ok = rob_crit.get("stability_ok", _number(robustness.get("feature_stability"), 0) >= 0.5)
 
     # Lineage Rows
     model_meta = dossier.get("model_metadata", {})
@@ -453,7 +461,7 @@ def generate_dashboard_html(
             <div class="panel">
                 <h2>
                     <span>Fairness Paired Sensitivity Test</span>
-                    <span class="badge {'badge-green' if fairness.get('passed', True) else 'badge-red'}">{'PASSED' if fairness.get('passed', True) else 'FLAGGED'}</span>
+                    <span class="badge {'badge-green' if fairness_passed else 'badge-red'}">{'PASSED' if fairness_passed else 'INCONCLUSIVE / FLAGGED'}</span>
                 </h2>
                 <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Evaluates score deltas under identity, geo-temporal, and domain alterations (Threshold &le; {fairness.get('threshold', 10)}):</p>
                 <table>
@@ -466,7 +474,7 @@ def generate_dashboard_html(
             <div class="panel">
                 <h2>
                     <span>Compound Robustness Verification</span>
-                    <span class="badge {'badge-green' if robustness.get('passed', True) else 'badge-red'}">{'PASSED' if robustness.get('passed', True) else 'FAILED'}</span>
+                    <span class="badge {'badge-green' if robustness_passed else 'badge-red'}">{'PASSED' if robustness_passed else 'INCONCLUSIVE / FAILED'}</span>
                 </h2>
                 <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Evaluates structural stability and feature ranking consistency across {robustness.get('evaluated_variants', 0)} perturbations:</p>
                 <ul>

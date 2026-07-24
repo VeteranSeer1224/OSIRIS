@@ -7,12 +7,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from release_policy import require_release
+from release_policy import ReleaseContext, require_release
 
 
-def export_stix21(report: Mapping[str, Any], output_path: str | Path) -> Path:
+def export_stix21(
+    report: Mapping[str, Any],
+    output_path: str | Path,
+    *,
+    release_context: ReleaseContext | None = None,
+) -> Path:
     """Export observable findings as a STIX 2.1 bundle only after PASS."""
-    require_release(report, "STIX export")
+    require_release(report, "STIX export", context=release_context)
     metadata = report.get("report_metadata", {})
     summary = report.get("summary", {})
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

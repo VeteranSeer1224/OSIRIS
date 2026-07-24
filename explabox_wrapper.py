@@ -51,7 +51,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Protocol, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Protocol, Sequence, Tuple, Union, cast
 
 try:
     from mind.mind_profile import (
@@ -118,13 +118,13 @@ def _load_json(source: DossierInput) -> JSONDict:
         return dict(source)
 
     if isinstance(source, Path):
-        return json.loads(source.read_text(encoding="utf-8"))
+        return cast(JSONDict, json.loads(source.read_text(encoding="utf-8")))
 
     if isinstance(source, str):
         candidate = Path(source)
         if candidate.exists():
-            return json.loads(candidate.read_text(encoding="utf-8"))
-        return json.loads(source)
+            return cast(JSONDict, json.loads(candidate.read_text(encoding="utf-8")))
+        return cast(JSONDict, json.loads(source))
 
     raise TypeError(f"Unsupported input type: {type(source)!r}")
 
@@ -388,6 +388,8 @@ def _feature_plain_language(feature: Mapping[str, Any]) -> str:
         return "No adversarial prompt injection patterns detected"
     elif name == "domain_age_days":
         try:
+            if value is None:
+                raise TypeError("domain age is absent")
             days = float(value)
             years = days / 365.25
             return f"Domain has been registered for {value_text} days (~{years:.1f} years), indicating established historical reputation and stability"
@@ -496,9 +498,10 @@ class FallbackBackend:
         """Return a structured explanation with full attribution."""
         risk_score = _clip_score(float(dossier.get("risk_score", 0) or 0))
         top_features = _top_features(dossier)
-        positive_evidence, negative_evidence = _split_evidence(top_features)
+        feature_views: List[Mapping[str, Any]] = list(top_features)
+        positive_evidence, negative_evidence = _split_evidence(feature_views)
         confidence = _compute_confidence(dossier)
-        explanation = _build_explanation(dossier, top_features)
+        explanation = _build_explanation(dossier, feature_views)
 
         return {
             "backend": self.name,
@@ -794,8 +797,9 @@ def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DE
 
     if not dossiers:
         return {
-            "passed": True,
+            "passed": False,
             "test_type": "paired_sensitivity_test",
+            "outcome": "INSUFFICIENT_SAMPLE",
             "notes": ["No dossiers supplied."],
             "max_score_delta": 0,
             "avg_score_delta": 0,
@@ -837,7 +841,9 @@ def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DE
     avg_delta = _mean_or_zero(deltas)
     evidence_mutated = any(not detail["evidence_unchanged"] for detail in variant_details)
     flagged = max_delta > threshold or evidence_mutated
-    passed = not flagged
+    # This implementation does not rerun extraction/LLM processing. A zero
+    # scoring delta is structurally expected and cannot establish fairness.
+    passed = False
 
     return {
         "passed": passed,
@@ -847,7 +853,7 @@ def _fairness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = DE
         "avg_score_delta": round(avg_delta, 4),
         "threshold": threshold,
         "flagged": flagged,
-        "outcome": "INVALID_TEST" if evidence_mutated else ("FAIL" if flagged else "PASS"),
+        "outcome": "INVALID_TEST" if evidence_mutated else "INCONCLUSIVE",
         "evaluated_variants": len(deltas),
         "variant_details": variant_details[:15],
     }
@@ -904,7 +910,8 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
     """
     if not dossiers:
         return {
-            "passed": True,
+            "passed": False,
+            "outcome": "INSUFFICIENT_SAMPLE",
             "notes": ["No dossiers supplied."],
             "max_score_delta": 0,
             "avg_score_delta": 0,
@@ -917,6 +924,7 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
     deltas: List[float] = []
     notes: List[str] = []
     any_decision_flip = False
+    influence_details: List[JSONDict] = []
 
     for dossier in dossiers:
         if not isinstance(dossier, Mapping):
@@ -928,9 +936,6 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
         structural_variants = (
             "missing_profile_fields",
             "empty_technical_stack",
-            "removed_emails",
-            "removed_whois",
-            "removed_dns",
         )
         for variant in structural_variants:
             perturbed = _perturb_robustness(dict(dossier), variant)
@@ -953,10 +958,12 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
             pert_score = _predict_score(perturbed)
             delta = abs(base_score - pert_score)
             pert_level = _risk_level(pert_score)
-            if pert_level != base_level:
-                any_decision_flip = True
-            deltas.append(delta)
-            notes.append(f"remove_feature[{_safe_str(feature.get('feature'), '?')}]: Δ={delta:.2f}")
+            influence_details.append({
+                "test": "counterfactual_evidence_deletion",
+                "feature": _safe_str(feature.get("feature"), "?"),
+                "score_delta": round(delta, 4),
+                "decision_changed": pert_level != base_level,
+            })
 
         # Perturbation: empty risk_features
         perturbed = copy.deepcopy(dict(dossier))
@@ -964,10 +971,10 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
         pert_score = _predict_score(perturbed)
         delta = abs(base_score - pert_score)
         pert_level = _risk_level(pert_score)
-        if pert_level != base_level:
-            any_decision_flip = True
-        deltas.append(delta)
-        notes.append(f"empty_features: Δ={delta:.2f}")
+        influence_details.append({
+            "test": "all_evidence_deletion", "score_delta": round(delta, 4),
+            "decision_changed": pert_level != base_level,
+        })
 
         # Perturbation: zero out all weights
         perturbed = copy.deepcopy(dict(dossier))
@@ -976,8 +983,10 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
                 f["weight"] = 0
         pert_score = _predict_score(perturbed)
         delta = abs(base_score - pert_score)
-        deltas.append(delta)
-        notes.append(f"zero_weights: Δ={delta:.2f}")
+        influence_details.append({
+            "test": "zero_all_weights", "score_delta": round(delta, 4),
+            "decision_changed": _risk_level(pert_score) != base_level,
+        })
 
     # Feature stability: top-k Jaccard similarity between base and perturbed rankings
     # For each feature deletion, compute top-k features of perturbed dossier and
@@ -1018,11 +1027,11 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
     max_delta = max(deltas) if deltas else 0
     avg_delta = _mean_or_zero(deltas)
 
-    # COMPOUND PASS CRITERIA — all must hold
+    # Only non-semantic structural invariance affects robustness PASS.
     delta_ok = max_delta <= threshold
     no_flip = not any_decision_flip
-    stability_ok = feature_stability >= 0.5
-    passed = delta_ok and no_flip and stability_ok
+    stability_ok = True
+    passed = bool(deltas) and delta_ok and no_flip
 
     return {
         "passed": passed,
@@ -1033,6 +1042,8 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
         "decision_flipped": any_decision_flip,
         "feature_stability": round(feature_stability, 4),
         "evaluated_variants": len(deltas),
+        "outcome": "PASS" if passed else "FAIL",
+        "counterfactual_influence": influence_details,
         "pass_criteria": {
             "delta_ok": delta_ok,
             "no_decision_flip": no_flip,
@@ -1122,7 +1133,7 @@ class ExplaboxWrapper:
         items = [self._coerce_dossier(item) for item in dossiers]
         self._ensure_initialized()
         if hasattr(self.backend, "explore"):
-            return self.backend.explore(items)
+            return cast(JSONDict, self.backend.explore(items))
         return {
             "backend": getattr(self.backend, "name", type(self.backend).__name__),
             "sample_count": len(items),
@@ -1133,7 +1144,7 @@ class ExplaboxWrapper:
         items = [self._coerce_dossier(item) for item in dossiers]
         self._ensure_initialized()
         if hasattr(self.backend, "examine"):
-            return self.backend.examine(items)
+            return cast(JSONDict, self.backend.examine(items))
         return {
             "backend": getattr(self.backend, "name", type(self.backend).__name__),
             "quality_score": 100,
@@ -1144,11 +1155,19 @@ class ExplaboxWrapper:
         items = [self._coerce_dossier(item) for item in dossiers]
         self._ensure_initialized()
         if hasattr(self.backend, "expose"):
-            return self.backend.expose(items)
+            return cast(JSONDict, self.backend.expose(items))
         return {
             "backend": getattr(self.backend, "name", type(self.backend).__name__),
-            "fairness": {"passed": True, "notes": "Unavailable backend; no-op fallback."},
-            "robustness": {"passed": True, "notes": "Unavailable backend; no-op fallback."},
+            "fairness": {
+                "passed": False, "outcome": "INCONCLUSIVE",
+                "evaluated_variants": 0,
+                "notes": ["Unavailable backend; audit is inconclusive."],
+            },
+            "robustness": {
+                "passed": False, "outcome": "INCONCLUSIVE",
+                "evaluated_variants": 0,
+                "notes": ["Unavailable backend; audit is inconclusive."],
+            },
         }
 
     # ------------------------------------------------------------------
@@ -1160,7 +1179,7 @@ class ExplaboxWrapper:
         item = self._coerce_dossier(dossier)
         self._ensure_initialized()
         if hasattr(self.backend, "explain"):
-            return self.backend.explain(item)
+            return cast(JSONDict, self.backend.explain(item))
         return {
             "backend": getattr(self.backend, "name", type(self.backend).__name__),
             "target": _safe_str(item.get("target"), "unknown"),

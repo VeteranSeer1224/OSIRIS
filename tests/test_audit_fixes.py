@@ -14,7 +14,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mind.mind_profile import _stub_dossier, score_from_features, DeterministicScorer
 from explabox_wrapper import _perturb_fairness, _fairness_check, _predict_score
-from report_build import _assert_explanation_gate, export_pdf, build_report, export_misp
+from report_build import (
+    _assert_explanation_gate,
+    _build_xai_audit_section,
+    build_report,
+    export_misp,
+    export_pdf,
+)
 from release_policy import ReleaseBlockedError
 from sense_clean import generate_raw_scan
 from run_pipeline import pipeline_from_existing_scan
@@ -86,8 +92,8 @@ def test_audit_gate_failure_and_blocked_status():
     bad_card = {"cards": [{
         "entity": "gate.test",
         "risk_score": 90, # 40 point discrepancy vs dossier's 50
-        "fairness_check": {"passed": True},
-        "robustness_check": {"passed": True}
+        "fairness_check": {"passed": True, "evaluated_variants": 1},
+        "robustness_check": {"passed": True, "evaluated_variants": 1}
     }]}
     res_fail = _assert_explanation_gate(dossier, bad_card)
     assert res_fail["status"] == "FAIL"
@@ -97,8 +103,8 @@ def test_audit_gate_failure_and_blocked_status():
     good_card = {"cards": [{
         "entity": "gate.test",
         "risk_score": 50,
-        "fairness_check": {"passed": True},
-        "robustness_check": {"passed": True}
+        "fairness_check": {"passed": True, "evaluated_variants": 1},
+        "robustness_check": {"passed": True, "evaluated_variants": 1}
     }]}
     res_pass = _assert_explanation_gate(dossier, good_card)
     assert res_pass["status"] == "PASS"
@@ -112,11 +118,39 @@ def test_audit_gate_rejects_nonreconstructable_score():
     }
     cards = {"cards": [{
         "entity": "reconstruction.test", "risk_score": 50,
-        "fairness_check": {"passed": True}, "robustness_check": {"passed": True},
+        "fairness_check": {"passed": True, "evaluated_variants": 1},
+        "robustness_check": {"passed": True, "evaluated_variants": 1},
     }]}
     result = _assert_explanation_gate(dossier, cards)
     assert result["status"] == "FAIL"
     assert any("reconstruction" in condition.lower() for condition in result["failed_conditions"])
+
+
+def test_audit_gate_missing_control_fields_fail_closed():
+    dossier = {
+        "target": "missing.test", "risk_score": 15,
+        "scoring_metadata": {
+            "intercept": 15.0, "risk_score_raw": 15.0, "contributions": [],
+        },
+    }
+    cards = {"cards": [{"entity": "missing.test", "risk_score": 15}]}
+    result = _assert_explanation_gate(dossier, cards)
+    assert result["status"] == "FAIL"
+    assert any("Fairness" in item for item in result["failed_conditions"])
+    assert any("Robustness" in item for item in result["failed_conditions"])
+
+    malformed = {"cards": [{
+        "entity": "missing.test",
+        "risk_score": 15,
+        "fairness_check": {"passed": True, "evaluated_variants": "invalid"},
+        "robustness_check": {"passed": True, "evaluated_variants": None},
+    }]}
+    malformed_result = _assert_explanation_gate(dossier, malformed)
+    assert malformed_result["status"] == "FAIL"
+
+    empty_audit = _build_xai_audit_section(dossier, {"cards": []})
+    assert empty_audit["overall_fairness_passed"] is False
+    assert empty_audit["overall_robustness_passed"] is False
 
 
 def test_xss_safety_in_pdf_and_dashboard(tmp_path: Path):

@@ -5,13 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from evidence_capsule import (
     CapsuleVerificationError,
     build_capsule,
     generate_development_key,
     verify_capsule,
+    write_public_key,
 )
+from conference_demo import run_conference_demo
 
 
 def _print_result(result: dict, as_json: bool) -> None:
@@ -27,26 +30,46 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     verify = subparsers.add_parser("verify", help="verify a signed Evidence Capsule")
     verify.add_argument("path")
+    verify.add_argument("--trusted-key", required=True)
     capsule = subparsers.add_parser("capsule", help="build or sign local Evidence Capsules")
     capsule_sub = capsule.add_subparsers(dest="capsule_command", required=True)
     keygen = capsule_sub.add_parser("keygen", help="generate an Ed25519 local-development key")
     keygen.add_argument("path")
+    keygen.add_argument("--public-key")
     build = capsule_sub.add_parser("build", help="build and sign an Evidence Capsule")
     build.add_argument("--source", required=True)
     build.add_argument("--output", required=True)
-    build.add_argument("--case", required=True, dest="case_id")
-    build.add_argument("--run", required=True, dest="run_id")
     build.add_argument("--key", required=True)
+    demo = subparsers.add_parser("demo", help="run offline OSIRIS demonstrations")
+    demo_sub = demo.add_subparsers(dest="demo_command", required=True)
+    conference = demo_sub.add_parser("conference", help="run the offline conference demo")
+    conference.add_argument("--output", default="demo-output")
     args = parser.parse_args(argv)
     try:
-        if args.command == "verify":
-            _print_result(verify_capsule(args.path), args.as_json)
+        if args.command == "demo":
+            _print_result(run_conference_demo(args.output), args.as_json)
+        elif args.command == "verify":
+            _print_result(
+                verify_capsule(args.path, trusted_public_key=args.trusted_key),
+                args.as_json,
+            )
         elif args.capsule_command == "keygen":
             path = generate_development_key(args.path)
+            if args.public_key:
+                write_public_key(path, args.public_key)
             _print_result({"status": "PASS", "key_path": str(path)}, args.as_json)
         else:
-            output = build_capsule(args.source, args.output, case_id=args.case_id, run_id=args.run_id, key_path=args.key)
-            _print_result({"status": "PASS", "capsule": str(output), "case_id": args.case_id, "run_id": args.run_id}, args.as_json)
+            output = build_capsule(
+                args.source, args.output, key_path=args.key
+            )
+            manifest = json.loads(
+                (Path(output) / "artifact-manifest.json").read_text(encoding="utf-8")
+            )
+            result = {
+                "status": "PASS", "capsule": str(output),
+                "case_id": manifest["case_id"], "run_id": manifest["run_id"],
+            }
+            _print_result(result, args.as_json)
         return 0
     except (CapsuleVerificationError, OSError, ValueError) as exc:
         result = {"status": "FAIL", "error": str(exc)}
