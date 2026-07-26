@@ -333,7 +333,7 @@ export function OsirisConsole() {
     }
   };
 
-  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+  const handleDrop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
     void handleImport(event.dataTransfer.files[0]);
   };
@@ -1137,7 +1137,7 @@ function Evidence({
 }: {
   imported: ImportedArtifact[];
   onImport: () => void;
-  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: DragEvent<HTMLElement>) => void;
   onSelect: (item: (typeof evidenceItems)[number]) => void;
 }) {
   const [query, setQuery] = useState("");

@@ -13,3 +13,4 @@ outputs/
 node_modules/
 .next/
 .open-next/
+*.tsbuildinfo
