@@ -25,6 +25,7 @@ from case_authorization import (
 )
 from evidence_store import LocalEvidenceStore
 from provenance import build_provenance
+from schemas.models import Dossier, RawScan
 
 from mind.mind_profile import profile  # noqa: E402
 
@@ -146,6 +147,7 @@ def pipeline_from_existing_scan(
     raw_scan["run_id"] = run_id
 
     validate_raw_scan(raw_scan)
+    RawScan.model_validate(raw_scan)
 
     raw_scan_path = output_dir / "raw_scan.json"
     save_json(raw_scan, raw_scan_path)
@@ -160,6 +162,9 @@ def pipeline_from_existing_scan(
     )
     dossier["case_id"] = case_id
     dossier["run_id"] = run_id
+    # The typed contract is authoritative; JSON Schema alone is deliberately
+    # not treated as sufficient because it cannot express all model rules.
+    Dossier.model_validate(dossier)
     save_json(dossier, dossier_path)
 
     graph_path = None

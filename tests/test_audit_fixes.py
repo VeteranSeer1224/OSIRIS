@@ -23,6 +23,7 @@ from report_build import (
 )
 from release_policy import ReleaseBlockedError
 from sense_clean import generate_raw_scan
+from sense_clean import extract_events
 from run_pipeline import pipeline_from_existing_scan
 from xai_dashboard import generate_dashboard_html
 
@@ -249,6 +250,18 @@ def test_evidence_ids_and_aggregation():
     ip_vals = [e["value"] for e in entities if e["type"] == "ip"]
     assert "2001:db8::1" in ip_vals
     assert "999.999.999.999" not in ip_vals
+
+
+def test_events_do_not_fabricate_source_observed_time():
+    events = extract_events([
+        {"type": "DNS_A", "data": "timeline.test", "module": "sfp_dns", "updated": "not-a-date"},
+        {"type": "SSL_CERTIFICATE_RAW", "data": "certificate", "module": "sfp_ssl", "updated": "2026-01-02 03:04:05"},
+    ])
+    assert events[0]["observed_at"] is None
+    assert events[0]["collected_at"]
+    assert events[0]["date"] == events[0]["collected_at"]
+    assert events[1]["observed_at"] == "2026-01-02T03:04:05Z"
+    assert events[1]["date"] == events[1]["observed_at"]
 
 
 def test_pipeline_export_dashboard_and_lineage(tmp_path: Path):

@@ -65,6 +65,8 @@ class RawEntity(BaseModel):
 
 class RawEvent(BaseModel):
     date: str                                # ISO 8601 date or datetime string
+    observed_at: Optional[datetime] = None   # source event time; absent is meaningful
+    collected_at: Optional[datetime] = None  # OSIRIS acquisition time
     type: EventType
     entity: str
     source: Optional[str] = None            # e.g. "haveibeenpwned"

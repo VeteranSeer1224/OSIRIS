@@ -5,6 +5,7 @@ from schema_validation import (
     validate_report,
     validate_explanation_cards,
 )
+from schemas.models import Dossier
 
 
 def test_raw_scan_schema():
@@ -80,3 +81,19 @@ def test_dossier_schema():
         "schema_version": "1.0"
     }
     assert validate_dossier(dossier)
+
+
+def test_dossier_pydantic_contract_rejects_incomplete_model_metadata():
+    dossier = {
+        "target": "example.com", "scan_date": "2026-06-30T00:00:00Z",
+        "profiled_at": "2026-06-30T00:01:00Z", "risk_score": 50,
+        "profile": {"identity": "x", "geo_temporal": "x", "technical_stack": [], "opsec_posture": "x"},
+        "risk_features": [], "executive_summary": "Summary.",
+        "model_metadata": {"prompt_version": "v1"},
+    }
+    try:
+        Dossier.model_validate(dossier)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Pydantic dossier contract accepted incomplete model metadata")

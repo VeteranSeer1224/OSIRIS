@@ -181,7 +181,7 @@ class LLMBackend:
         raise NotImplementedError
 
     def metadata(self) -> Dict[str, Any]:
-        return {"backend": self.name}
+        return {"backend": self.name, "model_name": "unknown"}
 
 
 class DeepSeekBackend(LLMBackend):
@@ -236,7 +236,7 @@ class DeepSeekBackend(LLMBackend):
         return response.choices[0].message.content or ""
 
     def metadata(self) -> Dict[str, Any]:
-        return {"backend": self.name, "model": self.model, "base_url": self.BASE_URL}
+        return {"backend": self.name, "model_name": self.model, "model": self.model, "base_url": self.BASE_URL}
 
 
 class AnthropicBackend(LLMBackend):
@@ -264,7 +264,7 @@ class AnthropicBackend(LLMBackend):
         return str(response.content[0].text)
 
     def metadata(self) -> Dict[str, Any]:
-        return {"backend": self.name, "model": self.model}
+        return {"backend": self.name, "model_name": self.model, "model": self.model}
 
 
 class OpenAIBackend(LLMBackend):
@@ -303,7 +303,7 @@ class OpenAIBackend(LLMBackend):
         return response.choices[0].message.content or ""
 
     def metadata(self) -> Dict[str, Any]:
-        return {"backend": self.name, "model": self.model}
+        return {"backend": self.name, "model_name": self.model, "model": self.model}
 
 
 class OpenRouterBackend(LLMBackend):
@@ -346,7 +346,7 @@ class OpenRouterBackend(LLMBackend):
         return response.choices[0].message.content or ""
 
     def metadata(self) -> Dict[str, Any]:
-        return {"backend": self.name, "model": self.model, "base_url": self.BASE_URL}
+        return {"backend": self.name, "model_name": self.model, "model": self.model, "base_url": self.BASE_URL}
 
 
 class OllamaBackend(LLMBackend):
@@ -380,7 +380,7 @@ class OllamaBackend(LLMBackend):
         return str(resp.json()["message"]["content"])
 
     def metadata(self) -> Dict[str, Any]:
-        return {"backend": self.name, "model": self.model, "host": self.host}
+        return {"backend": self.name, "model_name": self.model, "model": self.model, "host": self.host}
 
 
 def get_backend(name: str, model: Optional[str] = None) -> LLMBackend:
@@ -558,8 +558,14 @@ def enrich_dossier(
         })
     data["risk_features"] = updated_features
 
+    model_metadata = backend.metadata()
+    # `model_name` is the versioned typed-contract field. Accept the old
+    # internal `model` spelling only while normalising legacy backend plugins.
+    model_metadata["model_name"] = str(
+        model_metadata.get("model_name") or model_metadata.pop("model", "unknown")
+    )
     data["model_metadata"] = {
-        **backend.metadata(),
+        **model_metadata,
         "prompt_version": prompt_version,
         "run_timestamp": data["profiled_at"],
     }
@@ -614,7 +620,7 @@ def profile(
         log.info("DRY RUN — skipping LLM call. Returning stub dossier.")
         backend = type("StubBackend", (LLMBackend,), {
             "name": "dry_run",
-            "metadata": lambda self: {"backend": "dry_run"},
+            "metadata": lambda self: {"backend": "dry_run", "model_name": "none"},
         })()
         dossier = _stub_dossier(target, scan)
         dossier = enrich_dossier(

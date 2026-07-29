@@ -188,7 +188,7 @@ def normalize_entities(raw_data):
 def extract_events(raw_data):
     events = []
 
-    default_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    collected_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for item in raw_data:
         sf_type = item.get("type", "")
@@ -201,17 +201,18 @@ def extract_events(raw_data):
         if value is None:
             continue
 
-        # Use the SpiderFoot-provided timestamp if available
+        # Preserve the distinction between an event's source-observed time and
+        # the time OSIRIS collected it. A missing or malformed source time is
+        # not evidence that the event happened at collection time.
         updated_raw = item.get("updated", "")
+        observed_at = None
         if updated_raw:
             try:
                 # SpiderFoot CSV format: "2026-06-29 09:51:23"
                 dt = datetime.strptime(updated_raw, "%Y-%m-%d %H:%M:%S")
-                event_time = dt.replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                observed_at = dt.replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             except (ValueError, TypeError):
-                event_time = default_time
-        else:
-            event_time = default_time
+                observed_at = None
 
         sf_upper = sf_type.upper()
 
@@ -230,7 +231,11 @@ def extract_events(raw_data):
 
         if event_type:
             events.append({
-                "date": event_time,
+                # Kept for backwards-compatible renderers. Consumers must use
+                # observed_at for chronology and collected_at for acquisition.
+                "date": observed_at or collected_at,
+                "observed_at": observed_at,
+                "collected_at": collected_at,
                 "type": event_type,
                 "entity": value,
                 "source": module,

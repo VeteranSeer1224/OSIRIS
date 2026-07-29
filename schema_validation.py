@@ -50,6 +50,8 @@ RAW_SCAN_SCHEMA = {
                 ],
                 "properties": {
                     "date": { "type": "string" },
+                    "observed_at": { "type": ["string", "null"] },
+                    "collected_at": { "type": ["string", "null"] },
                     "type": { "type": "string" },
                     "entity": { "type": "string" },
                     "source": { "type": ["string", "null"] },
