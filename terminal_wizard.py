@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import getpass
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -714,6 +715,10 @@ class OsirisWizard:
             ("Python 3.12", lambda: sys.version_info[:2] == (3, 12) or (_ for _ in ()).throw(ValueError(sys.version))),
             ("Ethics acknowledgement", lambda: self._check_disclaimer()),
             ("Case workspace writable", lambda: os.access(self.workspace.root, os.W_OK) or (_ for _ in ()).throw(ValueError("not writable"))),
+            ("OpenRouter/OpenAI SDK", lambda: self._require_module("openai")),
+            ("Graph renderer", lambda: self._require_module("pyvis")),
+            ("PDF renderer", lambda: self._require_module("weasyprint")),
+            ("Explabox package", lambda: self._require_module("explabox")),
             ("SpiderFoot runtime", self._check_spiderfoot),
         ]
         for name, check in checks:
@@ -724,6 +729,10 @@ class OsirisWizard:
                 self.io.write(f"FAIL  {name}: {exc}")
         self.io.write("INFO  OpenRouter key: configured" if os.getenv("OPENROUTER_API_KEY") else "INFO  OpenRouter key: requested only when needed")
         self.io.pause()
+
+    def _require_module(self, module: str) -> None:
+        if importlib.util.find_spec(module) is None:
+            raise ImportError(f"{module} is not installed; rerun ./setup.sh")
 
     def _check_disclaimer(self) -> None:
         from run_pipeline import check_ethics_gate
