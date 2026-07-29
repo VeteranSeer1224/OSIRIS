@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -769,10 +770,6 @@ FEATURE_BOUNDS: Dict[str, tuple[float, float]] = {
     "ipv6_enabled":                 (0.0,   1.0),   # binary
 }
 
-# Features not in the table pass through as-is (assumed already 0-1 or binary).
-_BOUNDS_FALLBACK: tuple[float, float] = (0.0, 1.0)
-
-
 # ---------------------------------------------------------------------------
 # 8b. Deterministic Scoring Engine
 #
@@ -895,34 +892,38 @@ class DeterministicScorer:
 
         Returns ScoringResult with full audit trail.
         """
+        if score_mode not in {"REAL", "STUB"}:
+            raise ValueError("score_mode must be REAL or STUB")
+
         contributions: list = []
         known_features_present = 0
+        seen_features: set[str] = set()
 
         for feat in risk_features:
             if not isinstance(feat, dict):
-                continue
-            name = feat.get("feature", "")
-            if str(name).lower().startswith(("ocean_", "ideology")):
-                # Psychological and ideology dimensions are experimental only;
-                # never silently allow them into the operational score.
-                continue
-            raw_val = feat.get("value", 0)
+                raise ValueError("risk features must be objects")
+            name = feat.get("feature")
+            if not isinstance(name, str) or not name:
+                raise ValueError("risk feature name must be a non-empty string")
+            if name not in self.weights:
+                raise ValueError(f"unsupported scoring feature: {name}")
+            if name in seen_features:
+                raise ValueError(f"duplicate scoring feature: {name}")
+            seen_features.add(name)
+
+            raw_val = feat.get("value")
+            if isinstance(raw_val, bool):
+                raise ValueError(f"scoring feature {name} must be numeric, not boolean")
             try:
                 raw_val = float(raw_val)
             except (TypeError, ValueError):
-                raw_val = 0.0
+                raise ValueError(f"scoring feature {name} must be numeric") from None
+            if not math.isfinite(raw_val):
+                raise ValueError(f"scoring feature {name} must be finite")
 
-            # Use the feature's own weight if present, else default
-            weight = self.weights.get(name)
-            if weight is None:
-                feat_weight = feat.get("weight", 0)
-                try:
-                    weight = float(feat_weight)
-                except (TypeError, ValueError):
-                    weight = 0.0
-
-            if name in self.weights:
-                known_features_present += 1
+            # The versioned scorer registry, never the model payload, owns weights.
+            weight = self.weights[name]
+            known_features_present += 1
 
             norm_val = normalise_value(name, raw_val)
             contribution_points = norm_val * weight
@@ -967,9 +968,15 @@ _default_scorer = DeterministicScorer()
 def normalise_value(feature: str, raw_value: float) -> float:
     """
     Min-Max normalise a single feature value to [0, 1] using FEATURE_BOUNDS.
-    Unknown features are clamped to [0, 1] using the fallback bounds.
+    Unknown features are rejected so a model cannot add an unreviewed score input.
     """
-    lo, hi = FEATURE_BOUNDS.get(feature, _BOUNDS_FALLBACK)
+    if feature not in FEATURE_BOUNDS:
+        raise ValueError(f"unsupported scoring feature: {feature}")
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        raise ValueError(f"scoring feature {feature} must be numeric")
+    if not math.isfinite(float(raw_value)):
+        raise ValueError(f"scoring feature {feature} must be finite")
+    lo, hi = FEATURE_BOUNDS[feature]
     if hi == lo:
         return 0.0
     return max(0.0, min(1.0, (raw_value - lo) / (hi - lo)))
@@ -994,10 +1001,29 @@ def extract_feature_vector(dossier: Dict[str, Any]) -> Dict[str, float]:
     Raw values are preserved here for audit trail.
     Use normalise_feature_vector() on the result before passing to Explabox.
     """
-    return {
-        f["feature"]: float(f["value"]) if isinstance(f["value"], (int, float)) else 0.0
-        for f in dossier.get("risk_features", [])
-    }
+    features = dossier.get("risk_features", [])
+    if not isinstance(features, list):
+        raise ValueError("risk_features must be a list")
+    result: Dict[str, float] = {}
+    for feature in features:
+        if not isinstance(feature, dict):
+            raise ValueError("risk features must be objects")
+        name = feature.get("feature")
+        if not isinstance(name, str) or name not in DEFAULT_WEIGHTS:
+            raise ValueError(f"unsupported scoring feature: {name}")
+        if name in result:
+            raise ValueError(f"duplicate scoring feature: {name}")
+        value = feature.get("value")
+        if isinstance(value, bool):
+            raise ValueError(f"scoring feature {name} must be numeric, not boolean")
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"scoring feature {name} must be numeric") from None
+        if not math.isfinite(numeric_value):
+            raise ValueError(f"scoring feature {name} must be finite")
+        result[name] = numeric_value
+    return result
 
 
 def score_from_features(feature_vector: Dict[str, float], dossier: Dict[str, Any]) -> float:
@@ -1009,19 +1035,13 @@ def score_from_features(feature_vector: Dict[str, float], dossier: Dict[str, Any
 
     Returns a float in [0, 100].
     """
-    # Reconstruct risk_features list from feature_vector + dossier weights
+    # Reconstruct risk features from the vector. The scorer owns all weights;
+    # model/dossier supplied weights are retained only as non-authoritative audit data.
     risk_features = []
-    weight_map = {
-        f["feature"]: f.get("weight", DEFAULT_WEIGHTS.get(f["feature"], 0))
-        for f in dossier.get("risk_features", [])
-        if isinstance(f, dict)
-    }
     for feat_name, raw_val in feature_vector.items():
-        weight = weight_map.get(feat_name, DEFAULT_WEIGHTS.get(feat_name, 0))
         risk_features.append({
             "feature": feat_name,
             "value": raw_val,
-            "weight": weight,
         })
 
     result = _default_scorer.score(risk_features, score_mode="REAL")

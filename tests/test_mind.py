@@ -294,17 +294,17 @@ class TestExplaboxIntegration:
         assert "domain_age_days" in vec
         assert isinstance(vec["domain_age_days"], float)
 
-    def test_extract_feature_vector_skips_non_numeric(self, valid_dossier):
-        # string-value features become 0.0
+    def test_extract_feature_vector_rejects_non_numeric(self, valid_dossier):
+        # Missing or malformed observations must not silently become a benign zero.
         dossier = dict(valid_dossier)
         dossier["risk_features"].append({
-            "feature": "string_feature",
+            "feature": "open_ports_sensitive",
             "value": "some text",
             "weight": 0.1,
             "plain_language": "test",
         })
-        vec = extract_feature_vector(dossier)
-        assert vec["string_feature"] == 0.0
+        with pytest.raises(ValueError, match="must be numeric"):
+            extract_feature_vector(dossier)
 
     def test_score_from_features_in_range(self, valid_dossier):
         vec = extract_feature_vector(valid_dossier)
@@ -533,11 +533,10 @@ class TestNormalisation:
         assert normalise_value("cloudflare_proxied", 1.0) == 1.0
         assert normalise_value("cloudflare_proxied", 0.0) == 0.0
 
-    def test_unknown_feature_clamped_to_01(self):
-        """Features not in FEATURE_BOUNDS use fallback [0, 1] and clamp."""
+    def test_unknown_feature_is_rejected(self):
         from mind.mind_profile import normalise_value
-        assert normalise_value("totally_new_feature", 0.7) == 0.7
-        assert normalise_value("totally_new_feature", 5.0) == 1.0
+        with pytest.raises(ValueError, match="unsupported scoring feature"):
+            normalise_value("totally_new_feature", 0.7)
 
     def test_normalise_vector_all_values_in_range(self, valid_dossier):
         from mind.mind_profile import extract_feature_vector, normalise_feature_vector
@@ -622,7 +621,7 @@ class TestEdgeCases:
         stub = _stub_dossier("big.com", scan)
         assert 0 <= stub["risk_score"] <= 100
 
-    def test_unknown_feature_does_not_crash(self):
+    def test_unknown_feature_is_rejected(self):
         dossier = {
             "risk_features": [
                 {
@@ -633,8 +632,5 @@ class TestEdgeCases:
                 }
             ]
         }
-        score = score_from_features(
-            {"future_feature": 0.7},
-            dossier
-        )
-        assert 0 <= score <= 100
+        with pytest.raises(ValueError, match="unsupported scoring feature"):
+            score_from_features({"future_feature": 0.7}, dossier)
