@@ -37,7 +37,7 @@ def test_case_workspace_creates_isolated_case_tree(tmp_path: Path):
     workspace = CaseWorkspace(tmp_path / "cases")
     case_path = workspace.create(_metadata())
     assert json.loads((case_path / "case.json").read_text())["status"] == "OPEN"
-    for folder in ("authorization", "inputs", "notes", "runs"):
+    for folder in ("authorization", "capsules", "inputs", "notes", "runs"):
         assert (case_path / folder).is_dir()
     assert workspace.list_cases()[0]["case_id"] == "CASE-WIZARD"
     with pytest.raises(ValueError, match="case ID"):

@@ -166,7 +166,7 @@ class CaseWorkspace:
         path = self.case_path(case_id)
         if path.exists():
             raise FileExistsError(f"case already exists: {case_id}")
-        for child in ("authorization", "inputs", "notes", "runs"):
+        for child in ("authorization", "capsules", "inputs", "notes", "runs"):
             (path / child).mkdir(parents=True, exist_ok=True)
         metadata = dict(metadata)
         metadata.setdefault("schema_version", "1.0")
@@ -350,6 +350,7 @@ class OsirisWizard:
                 ("authorization", "Authorization and human verification"),
                 ("sources", "Manage additional sources"),
                 ("runs", "View previous runs"),
+                ("capsule", "Build or verify an Evidence Capsule"),
                 ("summary", "View case details"),
                 ("close", "Close or reopen case"),
                 ("back", "Back to main menu"),
@@ -362,6 +363,8 @@ class OsirisWizard:
                 self.manage_sources(case_path)
             elif action == "runs":
                 self.show_runs(case_path)
+            elif action == "capsule":
+                self.capsule_menu(case_path)
             elif action == "summary":
                 self.io.write(json.dumps(case, indent=2))
                 self.io.pause()
@@ -754,6 +757,75 @@ class OsirisWizard:
                 )
             except Exception as exc:
                 self.io.write(f"INVALID {manifest}: {exc}")
+        self.io.pause()
+
+    def _select_completed_run(self, case_path: Path) -> Path:
+        manifests: list[tuple[str, Path]] = []
+        for manifest in sorted((case_path / "runs").glob("*/run.json"), reverse=True):
+            try:
+                data = _json_read(manifest)
+            except Exception:
+                continue
+            if data.get("status") == "COMPLETED":
+                manifests.append((str(data.get("run_name", manifest.parent.name)), manifest.parent))
+        if not manifests:
+            raise ValueError("no completed runs are available")
+        selected = self.io.choose("Select completed run", [
+            (str(index), name) for index, (name, _) in enumerate(manifests)
+        ])
+        return manifests[int(selected)][1]
+
+    def capsule_menu(self, case_path: Path) -> None:
+        from evidence_capsule import (
+            build_capsule,
+            generate_development_key,
+            verify_capsule,
+            write_public_key,
+        )
+
+        action = self.io.choose("Evidence Capsule", [
+            ("build", "Build and sign a capsule from a completed run"),
+            ("verify", "Verify an existing case capsule"),
+            ("back", "Back"),
+        ])
+        if action == "back":
+            return
+        if action == "build":
+            run_path = self._select_completed_run(case_path)
+            key_mode = self.io.choose("Signing key", [
+                ("existing", "Use an existing approved Ed25519 private key"),
+                ("development", "Generate a local-development Ed25519 key"),
+            ])
+            if key_mode == "existing":
+                key_path = Path(self.io.ask("Private key path")).expanduser().resolve()
+                public_path = Path(self.io.ask("Trusted public key output path")).expanduser().resolve()
+                write_public_key(key_path, public_path)
+            else:
+                self.io.write("NOTICE: a local-development key is not a production KMS identity.")
+                if not self.io.confirm("Generate the development key?", default=False):
+                    raise WizardCancelled("capsule key generation not confirmed")
+                key_path = case_path / "authorization" / "development-capsule-key.pem"
+                public_path = case_path / "authorization" / "development-capsule-public.pem"
+                if key_path.exists():
+                    raise ValueError("development key already exists; use the existing-key option")
+                generate_development_key(key_path)
+                write_public_key(key_path, public_path)
+            destination = case_path / "capsules" / run_path.name
+            capsule = build_capsule(run_path, destination, key_path=key_path)
+            result = verify_capsule(capsule, trusted_public_key=public_path)
+            self.io.write(f"PASS: capsule built and verified at {capsule}")
+            self.io.write(json.dumps(result, indent=2))
+        else:
+            capsules = sorted(path for path in (case_path / "capsules").iterdir() if path.is_dir())
+            if not capsules:
+                raise ValueError("no case capsules exist")
+            selected = self.io.choose("Select capsule", [
+                (str(index), path.name) for index, path in enumerate(capsules)
+            ])
+            public_default = case_path / "authorization" / "development-capsule-public.pem"
+            public_path = Path(self.io.ask("Trusted public key path", default=str(public_default))).expanduser().resolve()
+            result = verify_capsule(capsules[int(selected)], trusted_public_key=public_path)
+            self.io.write(json.dumps(result, indent=2))
         self.io.pause()
 
     def show_docs(self) -> None:
