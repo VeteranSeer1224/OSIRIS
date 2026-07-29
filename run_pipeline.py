@@ -77,7 +77,7 @@ def run_spiderfoot_scan(target, output_file, modules=None, use_case=None):
     except ImportError:
         # Preserve backwards compatibility for deployments that execute the
         # runner as a local subprocess, while still surfacing its diagnostics.
-        spiderfoot_runner = None
+        pass
     except Exception as exc:
         raise PipelineError(f"SpiderFoot execution is unavailable: {exc}") from exc
 

@@ -31,7 +31,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 from dataclasses import dataclass
 
 # ── optional heavy deps — fail gracefully so unit tests can import without them
@@ -921,7 +921,7 @@ class DeterministicScorer:
             if isinstance(raw_val, bool):
                 raise ValueError(f"scoring feature {name} must be numeric, not boolean")
             try:
-                raw_val = float(raw_val)
+                raw_val = float(cast(Any, raw_val))
             except (TypeError, ValueError):
                 raise ValueError(f"scoring feature {name} must be numeric") from None
             if not math.isfinite(raw_val):
@@ -1023,7 +1023,7 @@ def extract_feature_vector(dossier: Dict[str, Any]) -> Dict[str, float]:
         if isinstance(value, bool):
             raise ValueError(f"scoring feature {name} must be numeric, not boolean")
         try:
-            numeric_value = float(value)
+            numeric_value = float(cast(Any, value))
         except (TypeError, ValueError):
             raise ValueError(f"scoring feature {name} must be numeric") from None
         if not math.isfinite(numeric_value):
