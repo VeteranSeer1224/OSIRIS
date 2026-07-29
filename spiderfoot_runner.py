@@ -23,13 +23,27 @@ _SF_DIR = Path(__file__).resolve().parent / "spiderfoot"
 if str(_SF_DIR) not in sys.path:
     sys.path.insert(0, str(_SF_DIR))
 
+_SPIDERFOOT_IMPORT_ERROR: Exception | None = None
 try:
     from spiderfoot import SpiderFootDb, SpiderFootHelpers  # type: ignore[attr-defined]
     from spiderfoot.logger import logListenerSetup, logWorkerSetup
     from sflib import SpiderFoot
     from sfscan import startSpiderFootScanner
-except ImportError as e:
-    raise RuntimeError(f"Could not import SpiderFoot modules from {_SF_DIR}: {e}")
+except Exception as exc:  # third-party import errors can be non-ImportError
+    _SPIDERFOOT_IMPORT_ERROR = exc
+
+
+class SpiderFootUnavailableError(RuntimeError):
+    """Raised before collection when the optional SpiderFoot runtime is unusable."""
+
+
+def require_spiderfoot_runtime() -> None:
+    """Fail before any scan when the local optional collector cannot be imported."""
+    if _SPIDERFOOT_IMPORT_ERROR is not None:
+        raise SpiderFootUnavailableError(
+            "SpiderFoot runtime is unavailable; install the pinned collector extras "
+            f"and resolve its dependencies before live collection. Root cause: {_SPIDERFOOT_IMPORT_ERROR}"
+        ) from _SPIDERFOOT_IMPORT_ERROR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [SFRunner] %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -142,6 +156,7 @@ def run_scan(
     modules: str | list[Any] | None = None,
     use_case: str | None = None,
 ) -> Path:
+    require_spiderfoot_runtime()
     output_file = Path(output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
 

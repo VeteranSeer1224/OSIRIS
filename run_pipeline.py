@@ -75,7 +75,11 @@ def run_spiderfoot_scan(target, output_file, modules=None, use_case=None):
         spiderfoot_runner.run_scan(target, output_file, modules=modules, use_case=use_case)
         return output_file
     except ImportError:
-        pass
+        # Preserve backwards compatibility for deployments that execute the
+        # runner as a local subprocess, while still surfacing its diagnostics.
+        spiderfoot_runner = None
+    except Exception as exc:
+        raise PipelineError(f"SpiderFoot execution is unavailable: {exc}") from exc
 
     runner_path = Path(__file__).resolve().parent / "spiderfoot_runner.py"
     command = [

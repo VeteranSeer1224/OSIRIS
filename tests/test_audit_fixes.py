@@ -264,6 +264,14 @@ def test_events_do_not_fabricate_source_observed_time():
     assert events[1]["date"] == events[1]["observed_at"]
 
 
+def test_spiderfoot_runtime_failure_is_a_clear_precollection_error():
+    import spiderfoot_runner
+
+    if spiderfoot_runner._SPIDERFOOT_IMPORT_ERROR is not None:
+        with pytest.raises(spiderfoot_runner.SpiderFootUnavailableError, match="runtime is unavailable"):
+            spiderfoot_runner.require_spiderfoot_runtime()
+
+
 def test_pipeline_export_dashboard_and_lineage(tmp_path: Path):
     """Verify that end-to-end pipeline with --export-dashboard generates dashboard HTML and cryptographic lineage."""
     sf_data = [
