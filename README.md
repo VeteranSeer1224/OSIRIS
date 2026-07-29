@@ -26,9 +26,42 @@ versioned JSON schemas.
 * **Repository Location:** On WSL2, clone into the Linux filesystem rather than
   `/mnt/c/` to avoid filesystem overhead.
 * **System Dependencies:** Run `setup.sh` to install WeasyPrint prerequisites.
-* **Python Dependencies:** Run `pip install -e ".[dev,report,graph]"`.
+* **Python Dependencies:** Run `./setup.sh` for the complete pinned environment,
+  including the reviewed SpiderFoot revision and its compatibility dependencies.
 
 ## 🏃 Running the Pipeline
+
+### Terminal investigator wizard (recommended)
+
+Start OSIRIS with one command:
+
+```bash
+osiris
+```
+
+`python osiris.py` and `osiris wizard` are equivalent. The terminal wizard
+handles the complete operator workflow without requiring pipeline commands:
+
+1. Create or open a persistent case.
+2. Record investigator, scope, jurisdiction, retention, handling and sources.
+3. Create a fail-closed authorization draft.
+4. Copy and hash the approved source document and record a human attestation.
+5. Verify approval integrity, scope, collection mode and expiry.
+6. Select live SpiderFoot or an existing JSON/CSV export.
+7. Select OpenRouter, Ollama or offline dry-run analysis.
+8. Run the stages with terminal progress and save every result in the case.
+
+Case data is stored under `data/live_case/cases/<case-id>/` and is ignored by
+Git. Every run has its own `runs/<timestamp-id>/run.json`, including status,
+settings, results or the failure diagnostic. OpenRouter keys are requested with
+hidden input only when needed; the investigator can keep the key in memory or
+save it to the gitignored `.env` with owner-only permissions.
+
+Human approval is an explicit checkpoint. The wizard does not infer authority,
+and active collection cannot start without an approved, unexpired scope plus a
+matching copied authorization document and approval-record hash. This records
+an operator attestation; organizations requiring cryptographic identity or
+countersignature must add their approved signing workflow.
 
 ### Evidence Capsule verification (local development)
 
