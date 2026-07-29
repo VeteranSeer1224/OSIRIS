@@ -50,6 +50,7 @@ handles the complete operator workflow without requiring pipeline commands:
 6. Select live SpiderFoot or an existing JSON/CSV export.
 7. Select OpenRouter, Ollama or offline dry-run analysis.
 8. Run the stages with terminal progress and save every result in the case.
+9. Build and verify signed Evidence Capsules from completed runs.
 
 Case data is stored under `data/live_case/cases/<case-id>/` and is ignored by
 Git. Every run has its own `runs/<timestamp-id>/run.json`, including status,
