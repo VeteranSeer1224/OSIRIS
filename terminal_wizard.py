@@ -764,7 +764,8 @@ class OsirisWizard:
         for manifest in sorted((case_path / "runs").glob("*/run.json"), reverse=True):
             try:
                 data = _json_read(manifest)
-            except Exception:
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                self.io.write(f"Skipping invalid run manifest {manifest}: {exc}")
                 continue
             if data.get("status") == "COMPLETED":
                 manifests.append((str(data.get("run_name", manifest.parent.name)), manifest.parent))
