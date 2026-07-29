@@ -663,7 +663,8 @@ class OsirisWizard:
                     progress_callback=progress,
                 )
             else:
-                assert source_path is not None
+                if source_path is None:
+                    raise PipelineError("replay source was not selected")
                 copied_input = case_path / "inputs" / f"{run_name}-{_safe_name(source_path.name)}"
                 shutil.copy2(source_path, copied_input)
                 run_manifest["source_input"] = str(copied_input.relative_to(case_path))
