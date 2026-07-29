@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OSIRIS command-line entry point (currently capsule and verification paths)."""
+"""OSIRIS command-line entry point and terminal investigator wizard."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ from evidence_capsule import (
     verify_capsule,
     write_public_key,
 )
-from conference_demo import run_conference_demo
+from terminal_wizard import run_wizard
 
 
 def _print_result(result: dict, as_json: bool) -> None:
@@ -25,9 +25,11 @@ def _print_result(result: dict, as_json: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="osiris", description="OSIRIS evidence integrity commands")
+    parser = argparse.ArgumentParser(prog="osiris", description="OSIRIS investigation workspace")
     parser.add_argument("--json", action="store_true", dest="as_json", help="emit structured JSON")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
+    wizard = subparsers.add_parser("wizard", help="open the terminal investigator wizard")
+    wizard.add_argument("--cases-root", help="override the case workspace directory")
     verify = subparsers.add_parser("verify", help="verify a signed Evidence Capsule")
     verify.add_argument("path")
     verify.add_argument("--trusted-key", required=True)
@@ -46,14 +48,18 @@ def main(argv: list[str] | None = None) -> int:
     conference.add_argument("--output", default="demo-output")
     args = parser.parse_args(argv)
     try:
+        if args.command in {None, "wizard"}:
+            return run_wizard(cases_root=getattr(args, "cases_root", None))
         if args.command == "demo":
+            from conference_demo import run_conference_demo
+
             _print_result(run_conference_demo(args.output), args.as_json)
         elif args.command == "verify":
             _print_result(
                 verify_capsule(args.path, trusted_public_key=args.trusted_key),
                 args.as_json,
             )
-        elif args.capsule_command == "keygen":
+        elif args.command == "capsule" and args.capsule_command == "keygen":
             path = generate_development_key(args.path)
             if args.public_key:
                 write_public_key(path, args.public_key)

@@ -129,3 +129,20 @@ def test_active_authorization_survives_spiderfoot_pipeline(tmp_path, monkeypatch
     assert report["report_metadata"]["case_id"] == "CASE-ACTIVE"
     assert report["case_authorization"]["case_id"] == "CASE-ACTIVE"
     assert lineage["case_id"] == "CASE-ACTIVE"
+
+
+def test_pipeline_reports_stage_progress(tmp_path):
+    sf_file = tmp_path / "source.json"
+    sf_file.write_text(json.dumps([
+        {"type": "DOMAIN_NAME", "data": "progress.test", "module": "fixture"}
+    ]), encoding="utf-8")
+    events = []
+    pipeline_from_existing_scan(
+        "progress.test", sf_file, tmp_path / "run", mind_dry_run=True,
+        skip_graph=True, progress_callback=lambda stage, percent, detail: events.append(
+            (stage, percent, detail)
+        ),
+    )
+    assert events[0][0] == "authorization"
+    assert events[-1][:2] == ("complete", 100)
+    assert {event[0] for event in events} >= {"collection", "analysis", "explainability", "reporting"}

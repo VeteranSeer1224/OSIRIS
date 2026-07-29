@@ -7,6 +7,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from sense_clean import generate_raw_scan
 from report_build import build_report, export_pdf, export_misp
@@ -32,6 +33,14 @@ from mind.mind_profile import profile  # noqa: E402
 
 class PipelineError(Exception):
     pass
+
+
+ProgressCallback = Callable[[str, int, str], None]
+
+
+def _progress(callback: ProgressCallback | None, stage: str, percent: int, detail: str) -> None:
+    if callback is not None:
+        callback(stage, percent, detail)
 
 
 def ensure_dir(path):
@@ -121,8 +130,10 @@ def pipeline_from_existing_scan(
     collection_mode=CollectionMode.PASSIVE,
     mind_backend="ollama",
     mind_model=None,
+    progress_callback: ProgressCallback | None = None,
 ):
     """Run Sense → Mind → Web → Conscience → Report."""
+    _progress(progress_callback, "authorization", 5, "Validating ethics and case scope")
     check_ethics_gate()
     output_dir = ensure_dir(output_dir)
     run_id = str(uuid.uuid4())
@@ -143,6 +154,7 @@ def pipeline_from_existing_scan(
     )
     evidence_store.verify(raw_record)
 
+    _progress(progress_callback, "collection", 18, "Preserving and normalizing source evidence")
     raw_scan = generate_raw_scan(
         target,
         spiderfoot_json
@@ -156,6 +168,7 @@ def pipeline_from_existing_scan(
     raw_scan_path = output_dir / "raw_scan.json"
     save_json(raw_scan, raw_scan_path)
 
+    _progress(progress_callback, "analysis", 38, "Building the evidence-bound dossier")
     dossier_path = output_dir / "dossier.json"
     dossier = profile(
         raw_scan_path=str(raw_scan_path),
@@ -173,6 +186,7 @@ def pipeline_from_existing_scan(
 
     graph_path = None
     if not skip_graph:
+        _progress(progress_callback, "graph", 55, "Rendering the relationship graph")
         graph, timeline = build_graph(raw_scan)
         graph_path = output_dir / "graph.html"
         render_graph(
@@ -182,6 +196,7 @@ def pipeline_from_existing_scan(
             title=f"OSIRIS-Web — {target}",
         )
 
+    _progress(progress_callback, "explainability", 68, "Generating explanation and control artifacts")
     conscience_config = BuildConfig(
         input_path=dossier_path,
         output_dir=output_dir,
@@ -193,6 +208,7 @@ def pipeline_from_existing_scan(
     validate_explanation_cards(conscience_artifacts.explanation_cards)
 
     explanation_cards = conscience_artifacts.explanation_cards
+    _progress(progress_callback, "reporting", 82, "Building the review report")
     report = build_report(
         raw_scan,
         dossier=dossier,
@@ -267,6 +283,7 @@ def pipeline_from_existing_scan(
         generate_dashboard_html(raw_scan, dossier, explanation_cards, report, lineage, dashboard_path)
         results["xai_dashboard"] = str(dashboard_path)
 
+    _progress(progress_callback, "complete", 100, "Pipeline artifacts saved")
     return results
 
 
@@ -283,7 +300,9 @@ def pipeline_with_spiderfoot(
     case_authorization_path=None,
     mind_backend="ollama",
     mind_model=None,
+    progress_callback: ProgressCallback | None = None,
 ):
+    _progress(progress_callback, "authorization", 3, "Validating active-collection authorization")
     if not case_authorization_path:
         raise PipelineError(
             "Active SpiderFoot collection is disabled by default. Supply an approved "
@@ -300,6 +319,7 @@ def pipeline_with_spiderfoot(
 
     spiderfoot_output = output_dir / "spiderfoot_output.json"
 
+    _progress(progress_callback, "collection", 10, "Running the authorized SpiderFoot collection")
     run_spiderfoot_scan(
         target,
         spiderfoot_output,
@@ -320,6 +340,7 @@ def pipeline_with_spiderfoot(
         do_export_dashboard=do_export_dashboard,
         case_authorization_path=case_authorization_path,
         collection_mode=CollectionMode.ACTIVE,
+        progress_callback=progress_callback,
     )
 
 

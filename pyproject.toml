@@ -57,6 +57,7 @@ py-modules = [
   "schema_validation",
   "sense_clean",
   "spiderfoot_runner",
+  "terminal_wizard",
   "xai_dashboard",
 ]
 
