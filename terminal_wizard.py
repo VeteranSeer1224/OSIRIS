@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from artifact_io import atomic_write_json, atomic_write_text
+
 from case_authorization import (
     CaseAuthorization,
     CollectionMode,
@@ -49,10 +51,7 @@ def iso_now() -> str:
 
 
 def _json_write(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
-    temporary.replace(path)
+    atomic_write_json(path, value)
 
 
 def _json_read(path: Path) -> dict[str, Any]:
@@ -166,7 +165,7 @@ class CaseWorkspace:
         path = self.case_path(case_id)
         if path.exists():
             raise FileExistsError(f"case already exists: {case_id}")
-        for child in ("authorization", "capsules", "inputs", "notes", "runs"):
+        for child in ("authorization", "capsules", "inputs", "notes", "runs", "run-records"):
             (path / child).mkdir(parents=True, exist_ok=True)
         metadata = dict(metadata)
         metadata.setdefault("schema_version", "1.0")
@@ -212,6 +211,8 @@ class OsirisWizard:
     def __init__(self, *, workspace: CaseWorkspace | None = None, io: TerminalIO | None = None):
         self.workspace = workspace or CaseWorkspace()
         self.io = io or TerminalIO()
+        from investigation_service import InvestigationService
+        self.service = InvestigationService(self.workspace)
 
     def run(self) -> int:
         while True:
@@ -274,7 +275,7 @@ class OsirisWizard:
         retention = self.io.ask("Data retention policy", default="Retain per case authority; review at closure")
         marking = self.io.ask("Handling marking", default="TLP:CLEAR")
         sources = self._ask_list("Additional source file or source description (optional)", minimum=0)
-        path = self.workspace.create({
+        created = self.service.create_case({
             "case_id": case_id,
             "title": title,
             "purpose": purpose,
@@ -289,10 +290,10 @@ class OsirisWizard:
             "handling_marking": marking,
             "additional_sources": [],
         })
+        path = Path(created["path"])
         if sources:
-            metadata = _json_read(path / "case.json")
-            metadata["additional_sources"] = [self._record_source(path, item) for item in sources]
-            self.workspace.save(path, metadata)
+            for source in sources:
+                self.service.add_source(case_id, source)
         self.io.write(f"\nCase created: {path}")
         if self.io.confirm("Create its authorization draft now?", default=True):
             self.create_authorization(path)
@@ -347,16 +348,20 @@ class OsirisWizard:
             self.io.write(f"Folder: {case_path}")
             action = self.io.choose("Case menu", [
                 ("run", "Run investigation pipeline"),
+                ("retry", "Retry a failed or cancelled run"),
                 ("authorization", "Authorization and human verification"),
                 ("sources", "Manage additional sources"),
                 ("runs", "View previous runs"),
                 ("capsule", "Build or verify an Evidence Capsule"),
+                ("release", "Evaluate release and gated STIX/MISP exports"),
                 ("summary", "View case details"),
                 ("close", "Close or reopen case"),
                 ("back", "Back to main menu"),
             ])
             if action == "run":
                 self.run_investigation(case_path)
+            elif action == "retry":
+                self.retry_investigation(case_path)
             elif action == "authorization":
                 self.authorization_menu(case_path)
             elif action == "sources":
@@ -365,12 +370,15 @@ class OsirisWizard:
                 self.show_runs(case_path)
             elif action == "capsule":
                 self.capsule_menu(case_path)
+            elif action == "release":
+                self.release_menu(case_path)
             elif action == "summary":
                 self.io.write(json.dumps(case, indent=2))
                 self.io.pause()
             elif action == "close":
-                case["status"] = "CLOSED" if case.get("status") != "CLOSED" else "OPEN"
-                self.workspace.save(case_path, case)
+                self.service.set_case_status(
+                    case["case_id"], "CLOSED" if case.get("status") != "CLOSED" else "OPEN"
+                )
             else:
                 return
 
@@ -420,34 +428,12 @@ class OsirisWizard:
         expires_default = (utc_now() + timedelta(days=30)).isoformat()
         expires_at = self.io.ask("Expires at (ISO 8601 with timezone)", default=expires_default)
         excluded = self._ask_list("Explicitly excluded target (optional)", minimum=0)
-        draft = {
-            "schema_version": "1.0",
-            "case_id": case["case_id"],
-            "title": case["title"],
-            "purpose": case["purpose"],
-            "jurisdiction": case["jurisdiction"],
-            "created_at": iso_now(),
-            "created_by": case["investigator"]["name"],
-            "authorization_reference": reference,
-            "authorization_document_hash": "sha256:" + "0" * 64,
-            "allowed_collection_modes": ["passive", "active"] if mode == "active" else ["passive"],
-            "active_scanning_authorized": mode == "active",
-            "authorized_targets": case["targets"],
-            "excluded_targets": excluded,
-            "valid_from": valid_from,
-            "expires_at": expires_at,
-            "data_retention_policy": case["data_retention_policy"],
-            "handling_marking": case["handling_marking"],
-            "approvers": [],
-            "status": "DRAFT",
-        }
-        # Validate every field except the intentionally pending approval/hash semantics.
-        CaseAuthorization.model_validate(draft)
-        path = case_path / "authorization" / "authorization.json"
-        _json_write(path, draft)
-        approval = case_path / "authorization" / "approval-record.json"
-        if approval.exists():
-            approval.rename(approval.with_name(f"approval-record.superseded-{utc_now():%Y%m%d%H%M%S}.json"))
+        result = self.service.draft_authorization(
+            case["case_id"], active=mode == "active",
+            authorization_reference=reference, valid_from=valid_from,
+            expires_at=expires_at, excluded_targets=excluded,
+        )
+        path = Path(result["authorization"])
         self.io.write(f"Draft saved: {path}")
         return path
 
@@ -472,40 +458,12 @@ class OsirisWizard:
             raise WizardCancelled("approval phrase did not match")
         if not self.io.confirm("Has the approver reviewed target, mode, expiry, and retention?", default=False):
             raise WizardCancelled("approval review not confirmed")
-        source_dir = case_path / "authorization" / "source"
-        source_dir.mkdir(parents=True, exist_ok=True)
-        copied = source_dir / _safe_name(source.name)
-        if copied.exists():
-            copied = source_dir / f"{utc_now():%Y%m%d%H%M%S}-{_safe_name(source.name)}"
-        shutil.copy2(source, copied)
-        digest = _sha256(copied)
-        auth["authorization_document_hash"] = f"sha256:{digest}"
-        auth["approvers"] = [approver_name]
-        auth["status"] = "APPROVED"
-        validated = CaseAuthorization.model_validate(auth)
-        _json_write(auth_path, validated.model_dump(mode="json"))
-        record = {
-            "schema_version": "1.0",
-            "case_id": auth["case_id"],
-            "approved_at": iso_now(),
-            "approver": {
-                "name": approver_name,
-                "role": approver_role,
-                "identifier": approver_identifier,
-            },
-            "attestation": APPROVAL_PHRASE,
-            "authorization_reference": auth["authorization_reference"],
-            "source_document": str(copied.relative_to(case_path)),
-            "source_document_sha256": digest,
-            "authorized_targets": auth["authorized_targets"],
-            "allowed_collection_modes": auth["allowed_collection_modes"],
-            "expires_at": auth["expires_at"],
-        }
-        record["record_sha256"] = hashlib.sha256(
-            json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        record_path = case_path / "authorization" / "approval-record.json"
-        _json_write(record_path, record)
+        result = self.service.approve_authorization(
+            str(auth["case_id"]), source_document=str(source),
+            approver_name=approver_name, approver_role=approver_role,
+            approver_identifier=approver_identifier, attestation=assertion,
+            scope_review_confirmed=True,
+        )
         self.io.write(f"Approval artifacts saved under {case_path / 'authorization'}")
         return auth_path
 
@@ -513,28 +471,10 @@ class OsirisWizard:
         self, case_path: Path, *, active: bool, target: str | None = None
     ) -> CaseAuthorization:
         auth_path = case_path / "authorization" / "authorization.json"
-        record_path = case_path / "authorization" / "approval-record.json"
         auth = load_case_authorization(auth_path)
-        record = _json_read(record_path)
-        record_copy = dict(record)
-        recorded_record_hash = str(record_copy.pop("record_sha256", ""))
-        actual_record_hash = hashlib.sha256(
-            json.dumps(record_copy, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        if recorded_record_hash != actual_record_hash:
-            raise ValueError("approval record integrity check failed")
-        source = (case_path / str(record["source_document"])).resolve()
-        if not source.is_relative_to(case_path.resolve()) or not source.is_file():
-            raise ValueError("approved source document is missing or outside the case")
-        actual_source_hash = _sha256(source)
-        if actual_source_hash != record.get("source_document_sha256"):
-            raise ValueError("approved source document hash changed")
-        if auth.authorization_document_hash != f"sha256:{actual_source_hash}":
-            raise ValueError("authorization document hash does not match approval record")
         selected_target = target or auth.authorized_targets[0]
-        validate_collection(
-            auth, selected_target,
-            CollectionMode.ACTIVE if active else CollectionMode.PASSIVE,
+        self.service.verify_authorization(
+            auth.case_id, target=selected_target, active=active,
         )
         self.io.write(f"PASS: authorization {auth.case_id} is valid for {selected_target}")
         return auth
@@ -548,10 +488,8 @@ class OsirisWizard:
             else:
                 self.io.write(f"- reference: {source}")
         additions = self._ask_list("Add file path, URL reference, or source description", minimum=0)
-        case.setdefault("additional_sources", []).extend(
-            self._record_source(case_path, item) for item in additions
-        )
-        self.workspace.save(case_path, case)
+        for item in additions:
+            self.service.add_source(case["case_id"], item)
 
     def _record_source(self, case_path: Path, value: str) -> dict[str, Any]:
         candidate = Path(value).expanduser()
@@ -577,9 +515,7 @@ class OsirisWizard:
         return self.io.choose("Select target", [(item, item) for item in targets])
 
     def run_investigation(self, case_path: Path) -> None:
-        # Delay heavy graph/XAI imports until a run is actually requested so
-        # the menu, help and case register start immediately.
-        from run_pipeline import PipelineError, pipeline_from_existing_scan, pipeline_with_spiderfoot
+        from investigation_service import RunRequest
 
         case = _json_read(case_path / "case.json")
         if case.get("status") != "OPEN":
@@ -601,6 +537,16 @@ class OsirisWizard:
         else:
             use_case = self.io.choose("SpiderFoot profile", [(name, name) for name in USE_CASES])
             modules = self.io.ask("Optional comma-separated module override", required=False) or None
+        timeout = 900.0
+        if collection == "live":
+            timeout = float(self.io.ask("SpiderFoot timeout in seconds", default="900"))
+
+        existing_sources = case.get("additional_sources", [])
+        if existing_sources:
+            self.io.write(f"Case has {len(existing_sources)} additional source reference(s); they will be recorded in the run manifest.")
+        if self.io.confirm("Add another case source before this run?", default=False):
+            self.manage_sources(case_path)
+            case = _json_read(case_path / "case.json")
 
         llm_mode = self.io.choose("Analysis mode", [
             ("openrouter", "OpenRouter live LLM (openai/gpt-oss-120b)"),
@@ -616,78 +562,50 @@ class OsirisWizard:
 
         export_pdf = self.io.confirm("Generate PDF report?", default=True)
         export_dashboard = self.io.confirm("Generate analyst dashboard?", default=True)
-        skip_graph = not self.io.confirm("Generate relationship graph?", default=True)
-        self.io.heading("Preflight")
-        authorization_candidate = case_path / "authorization" / "authorization.json"
-        auth_path: Path | None = authorization_candidate
-        if collection == "live":
-            self.verify_authorization_artifacts(case_path, active=True, target=target)
-            self._check_spiderfoot()
-        elif authorization_candidate.exists():
-            # Replay may use an approved passive authorization but does not
-            # fabricate approval when none exists.
-            try:
-                self.verify_authorization_artifacts(case_path, active=False, target=target)
-            except Exception as exc:
-                self.io.write(f"NOTICE: replay remains review-only: {exc}")
-                auth_path = None
-        else:
-            auth_path = None
+        generate_graph = self.io.confirm("Generate relationship graph?", default=True)
+        self.io.write("Output class: REVIEW_ONLY. Release requires a separately verified typed release context.")
 
         if not self.io.confirm("Start this investigation run now?", default=False):
             raise WizardCancelled("run not confirmed")
-        run_name = f"{utc_now():%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
-        run_dir = case_path / "runs" / run_name
-        run_dir.mkdir(parents=True, exist_ok=False)
-        run_manifest = {
-            "schema_version": "1.0",
-            "run_name": run_name,
-            "case_id": case["case_id"],
-            "started_at": iso_now(),
-            "target": target,
-            "collection": collection,
-            "llm_mode": llm_mode,
-            "model": model,
-            "use_case": use_case,
-            "modules": modules,
-            "additional_sources": case.get("additional_sources", []),
-            "status": "RUNNING",
-        }
-        _json_write(run_dir / "run.json", run_manifest)
-        progress = ProgressDisplay(self.io)
         try:
-            if collection == "live":
-                results = pipeline_with_spiderfoot(
-                    target, run_dir, do_export_pdf=export_pdf,
-                    mind_dry_run=llm_mode == "dry",
-                    mind_backend="openrouter" if llm_mode == "openrouter" else "ollama",
-                    mind_model=model, skip_graph=skip_graph,
-                    do_export_dashboard=export_dashboard, modules=modules,
-                    use_case=use_case, case_authorization_path=auth_path,
-                    progress_callback=progress,
-                )
-            else:
-                if source_path is None:
-                    raise PipelineError("replay source was not selected")
-                copied_input = case_path / "inputs" / f"{run_name}-{_safe_name(source_path.name)}"
-                shutil.copy2(source_path, copied_input)
-                run_manifest["source_input"] = str(copied_input.relative_to(case_path))
-                results = pipeline_from_existing_scan(
-                    target, copied_input, run_dir, do_export_pdf=export_pdf,
-                    mind_dry_run=llm_mode == "dry",
-                    mind_backend="openrouter" if llm_mode == "openrouter" else "ollama",
-                    mind_model=model, skip_graph=skip_graph,
-                    do_export_dashboard=export_dashboard,
-                    case_authorization_path=auth_path,
-                    progress_callback=progress,
-                )
-            run_manifest.update({"status": "COMPLETED", "completed_at": iso_now(), "results": results})
-            _json_write(run_dir / "run.json", run_manifest)
-            self.io.write(f"\nRun completed. All artifacts: {run_dir}")
+            result = self.service.run_case(
+                case["case_id"], RunRequest(
+                    target=target, collection=collection,
+                    source_input=str(source_path) if source_path else None,
+                    llm_mode=llm_mode, model=model, use_case=use_case,
+                    modules=modules, export_pdf=export_pdf,
+                    export_dashboard=export_dashboard,
+                    generate_graph=generate_graph,
+                    spiderfoot_timeout=timeout, output_class="review-only",
+                ), progress_callback=ProgressDisplay(self.io),
+            )
+            self.io.write(f"\nRun completed. All artifacts: {result['run_dir']}")
+            self.io.write(
+                f"Technical={result['technical_status']}  Audit={result['audit_status']}  "
+                f"Release={result['release_status']}  Class={result['output_class']}"
+            )
         except Exception as exc:
-            run_manifest.update({"status": "FAILED", "completed_at": iso_now(), "error": str(exc)})
-            _json_write(run_dir / "run.json", run_manifest)
-            raise PipelineError(f"run failed; diagnostic saved in {run_dir / 'run.json'}: {exc}") from exc
+            raise ValueError(f"run failed; use Retry from the case menu after remediation: {exc}") from exc
+        self.io.pause()
+
+    def retry_investigation(self, case_path: Path) -> None:
+        case = _json_read(case_path / "case.json")
+        retryable = [run for run in self.service.list_runs(case["case_id"])
+                     if run.get("status") in {"FAILED", "CANCELLED"}
+                     and run.get("schema_version") == "2.0"]
+        if not retryable:
+            raise ValueError("no failed or cancelled service runs are available")
+        selected = self.io.choose("Select run to retry", [
+            (str(index), f"{run.get('run_name')} — {run.get('error', 'no detail')}")
+            for index, run in enumerate(retryable)
+        ])
+        if not self.io.confirm("Retry with the preserved settings now?", default=False):
+            raise WizardCancelled("retry not confirmed")
+        result = self.service.resume_run(
+            case["case_id"], str(retryable[int(selected)]["run_name"]),
+            progress_callback=ProgressDisplay(self.io),
+        )
+        self.io.write(f"Retry completed: {result['run_dir']}")
         self.io.pause()
 
     def _ensure_secret(self, variable: str, label: str) -> None:
@@ -701,7 +619,7 @@ class OsirisWizard:
             existing = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
             filtered = [line for line in existing if not line.startswith(f"{variable}=")]
             filtered.append(f"{variable}={value}")
-            env_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+            atomic_write_text(env_path, "\n".join(filtered) + "\n")
             env_path.chmod(0o600)
             self.io.write(f"Secret saved with owner-only permissions: {env_path}")
 
@@ -714,22 +632,12 @@ class OsirisWizard:
     def system_preflight(self) -> None:
         self.io.clear()
         self.io.heading("System preflight")
-        checks: list[tuple[str, Callable[[], Any]]] = [
-            ("Python 3.12", lambda: sys.version_info[:2] == (3, 12) or (_ for _ in ()).throw(ValueError(sys.version))),
-            ("Ethics acknowledgement", lambda: self._check_disclaimer()),
-            ("Case workspace writable", lambda: os.access(self.workspace.root, os.W_OK) or (_ for _ in ()).throw(ValueError("not writable"))),
-            ("OpenRouter/OpenAI SDK", lambda: self._require_module("openai")),
-            ("Graph renderer", lambda: self._require_module("pyvis")),
-            ("PDF renderer", lambda: self._require_module("weasyprint")),
-            ("Explabox package", lambda: self._require_module("explabox")),
-            ("SpiderFoot runtime", self._check_spiderfoot),
-        ]
-        for name, check in checks:
-            try:
-                check()
-                self.io.write(f"PASS  {name}")
-            except Exception as exc:
-                self.io.write(f"FAIL  {name}: {exc}")
+        result = self.service.preflight()
+        for check in result["checks"]:
+            line = f"{check['status']:<4}  {check['name']}"
+            if check["status"] == "FAIL":
+                line += f": {check.get('detail')} — {check.get('remediation')}"
+            self.io.write(line)
         self.io.write("INFO  OpenRouter key: configured" if os.getenv("OPENROUTER_API_KEY") else "INFO  OpenRouter key: requested only when needed")
         self.io.pause()
 
@@ -745,22 +653,27 @@ class OsirisWizard:
     def show_runs(self, case_path: Path) -> None:
         self.io.clear()
         self.io.heading("Previous runs")
-        manifests = sorted((case_path / "runs").glob("*/run.json"), reverse=True)
-        if not manifests:
+        case = _json_read(case_path / "case.json")
+        runs = self.service.list_runs(case["case_id"])
+        if not runs:
             self.io.write("No runs recorded for this case.")
-        for manifest in manifests:
-            try:
-                run = _json_read(manifest)
-                self.io.write(
-                    f"{run.get('run_name')}  [{run.get('status')}]  "
-                    f"{run.get('target')}  {run.get('collection')}  {manifest.parent}"
-                )
-            except Exception as exc:
-                self.io.write(f"INVALID {manifest}: {exc}")
+        for run in runs:
+            request = run.get("request", {}) if isinstance(run.get("request"), dict) else run
+            self.io.write(
+                f"{run.get('run_name')}  [{run.get('status')}]  "
+                f"{request.get('target')}  {request.get('collection')}  {run.get('manifest')}"
+            )
         self.io.pause()
 
     def _select_completed_run(self, case_path: Path) -> Path:
         manifests: list[tuple[str, Path]] = []
+        case = _json_read(case_path / "case.json")
+        for data in self.service.list_runs(case["case_id"]):
+            if data.get("status") == "COMPLETED" and data.get("schema_version") == "2.0":
+                name = str(data["run_name"])
+                path = case_path / "runs" / name
+                if path.is_dir():
+                    manifests.append((name, path))
         for manifest in sorted((case_path / "runs").glob("*/run.json"), reverse=True):
             try:
                 data = _json_read(manifest)
@@ -827,6 +740,29 @@ class OsirisWizard:
             public_path = Path(self.io.ask("Trusted public key path", default=str(public_default))).expanduser().resolve()
             result = verify_capsule(capsules[int(selected)], trusted_public_key=public_path)
             self.io.write(json.dumps(result, indent=2))
+        self.io.pause()
+
+    def release_menu(self, case_path: Path) -> None:
+        run_path = self._select_completed_run(case_path)
+        self.io.heading("Typed release evaluation")
+        self.io.write(
+            "Release requires a signature over canonical authorization JSON and an externally trusted Ed25519 public key."
+        )
+        signature = self.io.ask("Authorization signature file")
+        trusted_key = self.io.ask("Trusted public key file")
+        do_stix = self.io.confirm("Export STIX 2.1 if every gate passes?", default=False)
+        do_misp = self.io.confirm("Export MISP if every gate passes?", default=False)
+        if not self.io.confirm("Evaluate the typed release context now?", default=False):
+            raise WizardCancelled("release evaluation not confirmed")
+        case = _json_read(case_path / "case.json")
+        result = self.service.evaluate_run_release(
+            case["case_id"], run_path.name, signature_file=signature,
+            trusted_public_key=trusted_key, export_stix=do_stix,
+            export_misp=do_misp,
+        )
+        self.io.write(json.dumps(result, indent=2))
+        if result["status"] != "PASS":
+            self.io.write("Release remains BLOCKED; generated artifacts remain REVIEW_ONLY.")
         self.io.pause()
 
     def show_docs(self) -> None:

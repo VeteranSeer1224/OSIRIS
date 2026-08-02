@@ -36,3 +36,20 @@ def test_cli_returns_nonzero_for_tampered_capsule(tmp_path):
     assert main(["capsule", "build", "--source", str(source), "--output", str(capsule), "--key", str(key)]) == 0
     (capsule / "report.json").write_text("tampered", encoding="utf-8")
     assert main(["verify", str(capsule), "--trusted-key", str(public_key)]) == 2
+
+
+def test_noninteractive_case_commands_share_workspace_service(tmp_path, capsys):
+    root = tmp_path / "cases"
+    args = [
+        "--cases-root", str(root), "case", "create",
+        "--case-id", "CASE-CLI", "--title", "CLI case",
+        "--purpose", "Offline fixture", "--investigator-name", "Investigator",
+        "--investigator-id", "I-1", "--organization", "Lab",
+        "--target", "example.com", "--json",
+    ]
+    assert main(args) == 0
+    created = json.loads(capsys.readouterr().out)
+    assert created["case_id"] == "CASE-CLI"
+    assert main(["--cases-root", str(root), "case", "list", "--json"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed["cases"][0]["case_id"] == "CASE-CLI"

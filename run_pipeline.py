@@ -30,6 +30,9 @@ from evidence_store import LocalEvidenceStore
 from provenance import build_provenance
 from schemas.models import Dossier, RawScan
 from artifact_io import ArtifactIOError, atomic_write_json, require_empty_directory
+from artifact_io import atomic_write_text
+from chain_of_custody import append_event, verify_chain
+from legal_support import generate_electronic_record_certificate
 
 from mind.mind_profile import profile  # noqa: E402
 
@@ -170,6 +173,8 @@ def pipeline_from_existing_scan(
     mind_model=None,
     progress_callback: ProgressCallback | None = None,
     _output_prepared: bool = False,
+    _collection_metadata: dict | None = None,
+    case_id_override: str | None = None,
 ):
     """Run Sense → Mind → Web → Conscience → Report."""
     if not _output_prepared:
@@ -188,6 +193,8 @@ def pipeline_from_existing_scan(
             mind_model=mind_model,
             progress_callback=progress_callback,
             _output_prepared=True,
+            _collection_metadata=_collection_metadata,
+            case_id_override=case_id_override,
         ))
     _progress(progress_callback, "authorization", 5, "Validating ethics and case scope")
     check_ethics_gate()
@@ -203,7 +210,7 @@ def pipeline_from_existing_scan(
             validate_collection(authorization, target, collection_mode)
         except AuthorizationError as exc:
             raise PipelineError(f"Case authorization failed: {exc}") from exc
-    case_id = authorization.case_id if authorization else "UNAUTHORIZED-LEGACY"
+    case_id = authorization.case_id if authorization else (case_id_override or "UNAUTHORIZED-LEGACY")
     try:
         validated_input = load_spiderfoot_input(spiderfoot_json)
     except (OSError, ValueError) as exc:
@@ -287,6 +294,25 @@ def pipeline_from_existing_scan(
     report_path = output_dir / "report.json"
     save_json(report, report_path)
 
+    release_decision_path = output_dir / "release-decision.json"
+    save_json({
+        "schema_version": "1.0", "case_id": case_id, "run_id": run_id,
+        **report.get("release_decision", {"status": "BLOCKED", "passed": False, "reasons": ["missing release decision"]}),
+    }, release_decision_path)
+    run_summary_path = output_dir / "run-summary.json"
+    save_json({
+        "schema_version": "1.0", "case_id": case_id, "run_id": run_id,
+        "technical_status": "PASS", "audit_status": report.get("audit_gate", {}).get("status", "UNKNOWN"),
+        "release_status": report.get("release_decision", {}).get("status", "BLOCKED"),
+        "output_class": "RELEASE" if report.get("release_decision", {}).get("status") == "PASS" else "REVIEW_ONLY",
+        "score_mode": dossier.get("score_mode", "UNKNOWN"),
+        "model_metadata": dossier.get("model_metadata", {}),
+        "limitations": [
+            "OSIRIS output is investigative analysis, not source truth or legal advice.",
+            "A BLOCKED release decision prohibits dissemination exports.",
+        ],
+    }, run_summary_path)
+
     results = {
         "raw_evidence": str(output_dir / raw_record.relative_path),
         "raw_evidence_metadata": str(output_dir / raw_record.observation_path),
@@ -298,7 +324,19 @@ def pipeline_from_existing_scan(
         "robustness_report": str(conscience_paths["robustness_report"]),
         "robustness_report_json": str(conscience_paths["robustness_report_json"]),
         "report": str(report_path),
+        "release_decision": str(release_decision_path),
+        "run_summary": str(run_summary_path),
     }
+
+    collection_status_path = output_dir / "collection-status.json"
+    collection_status = _collection_metadata or {
+        "schema_version": "1.0", "status": "REPLAYED", "target": target,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "source": str(source_path),
+    }
+    collection_status.update({"case_id": case_id, "run_id": run_id})
+    save_json(collection_status, collection_status_path)
+    results["collection_status"] = str(collection_status_path)
 
     if graph_path is not None:
         results["graph"] = str(graph_path)
@@ -313,7 +351,31 @@ def pipeline_from_existing_scan(
         actual_misp_path = export_misp(report, misp_path)
         results["misp_export"] = str(actual_misp_path)
 
-    # Compute artifact hashes for lineage
+    custody_path = output_dir / "chain-of-custody.jsonl"
+    append_event(
+        custody_path, evidence_or_capsule_id=raw_record.evidence_id,
+        case_id=case_id, action="collected_and_normalized",
+        actor_identity=(authorization.created_by if authorization else "OSIRIS local operator"),
+        purpose=(authorization.purpose if authorization else "review-only technical analysis"),
+        location_or_system=str(output_dir),
+    )
+    verify_chain(custody_path)
+    results["chain_of_custody"] = str(custody_path)
+
+    legal_path = output_dir / "legal_draft.txt"
+    legal_case = (
+        authorization.model_dump(mode="json") if authorization else
+        {"case_id": case_id, "authorization_reference": "[NOT PROVIDED]", "handling_marking": "REVIEW_ONLY"}
+    )
+    atomic_write_text(legal_path, generate_electronic_record_certificate(
+        legal_case, raw_record.__dict__,
+        jurisdiction=(authorization.jurisdiction if authorization else "UNSPECIFIED"),
+    ))
+    results["legal_draft"] = str(legal_path)
+
+    # Hash every leaf artifact before provenance/lineage. Dashboard generation
+    # receives a preliminary lineage view; final lineage is published last and
+    # includes the dashboard and provenance hashes without a self-reference.
     artifact_hashes = {}
     for name, filepath in results.items():
         fp = Path(filepath)
@@ -329,9 +391,12 @@ def pipeline_from_existing_scan(
         "model_metadata": dossier.get("model_metadata", {}),
         "artifact_hashes": artifact_hashes,
     }
-    lineage_path = output_dir / "lineage.json"
-    save_json(lineage, lineage_path)
-    results["lineage"] = str(lineage_path)
+    if do_export_dashboard:
+        from xai_dashboard import generate_dashboard_html
+        dashboard_path = output_dir / "xai_dashboard.html"
+        generate_dashboard_html(raw_scan, dossier, explanation_cards, report, lineage, dashboard_path)
+        results["xai_dashboard"] = str(dashboard_path)
+        artifact_hashes[dashboard_path.name] = hashlib.sha256(dashboard_path.read_bytes()).hexdigest()
 
     provenance_path = output_dir / "provenance.jsonld"
     save_json(build_provenance(
@@ -339,12 +404,12 @@ def pipeline_from_existing_scan(
         artifacts=artifact_hashes,
     ), provenance_path)
     results["provenance"] = str(provenance_path)
+    artifact_hashes[provenance_path.name] = hashlib.sha256(provenance_path.read_bytes()).hexdigest()
 
-    if do_export_dashboard:
-        from xai_dashboard import generate_dashboard_html
-        dashboard_path = output_dir / "xai_dashboard.html"
-        generate_dashboard_html(raw_scan, dossier, explanation_cards, report, lineage, dashboard_path)
-        results["xai_dashboard"] = str(dashboard_path)
+    lineage["artifact_hashes"] = artifact_hashes
+    lineage_path = output_dir / "lineage.json"
+    save_json(lineage, lineage_path)
+    results["lineage"] = str(lineage_path)
 
     _progress(progress_callback, "complete", 100, "Pipeline artifacts saved")
     return results
@@ -424,18 +489,15 @@ def _pipeline_with_spiderfoot_prepared(
         collection_mode=CollectionMode.ACTIVE,
         progress_callback=progress_callback,
         _output_prepared=True,
+        _collection_metadata={
+            "schema_version": "1.0", "status": "FINISHED", "target": target,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "timeout_seconds": spiderfoot_timeout, "modules": modules, "use_case": use_case,
+        },
     )
     # The collector export has been preserved content-addressably; do not
     # publish a second mutable copy or include it accidentally in a capsule.
     spiderfoot_output.unlink(missing_ok=True)
-    collection_status = output_dir / "collection-status.json"
-    save_json({
-        "schema_version": "1.0", "status": "FINISHED", "target": target,
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "timeout_seconds": spiderfoot_timeout,
-        "modules": modules, "use_case": use_case,
-    }, collection_status)
-    results["collection_status"] = str(collection_status)
     return results
 
 

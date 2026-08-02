@@ -41,6 +41,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from explabox_wrapper import ExplaboxWrapper  # noqa: E402
+from artifact_io import atomic_write_json, atomic_write_text
 from schema_validation import validate_explanation_cards  # noqa: E402
 from schemas.models import ExplanationCards  # noqa: E402
 
@@ -562,20 +563,11 @@ def write_outputs(artifacts: BuildArtifacts, output_dir: Path) -> Dict[str, Path
     robustness_report_path = output_dir / "robustness_report.md"
     robustness_report_json_path = output_dir / "robustness_report.json"
 
-    explanation_cards_path.write_text(
-        json.dumps(artifacts.explanation_cards, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    fairness_report_path.write_text(artifacts.fairness_report_md, encoding="utf-8")
-    fairness_report_json_path.write_text(
-        json.dumps(artifacts.fairness_report_json, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    robustness_report_path.write_text(artifacts.robustness_report_md, encoding="utf-8")
-    robustness_report_json_path.write_text(
-        json.dumps(artifacts.robustness_report_json, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(explanation_cards_path, artifacts.explanation_cards)
+    atomic_write_text(fairness_report_path, artifacts.fairness_report_md)
+    atomic_write_json(fairness_report_json_path, artifacts.fairness_report_json)
+    atomic_write_text(robustness_report_path, artifacts.robustness_report_md)
+    atomic_write_json(robustness_report_json_path, artifacts.robustness_report_json)
 
     return {
         "explanation_cards": explanation_cards_path,

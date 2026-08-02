@@ -31,7 +31,7 @@ ALLOWED_ROOT_ARTIFACTS = frozenset({
     "robustness_report.md", "robustness_report.json",
     "report.json", "report.pdf", "graph.html", "xai_dashboard.html",
     "misp_export.json", "stix_export.json", "lineage.json",
-    "provenance.jsonld", "chain-of-custody.jsonl", "legal_draft.json",
+    "provenance.jsonld", "chain-of-custody.jsonl", "legal_draft.json", "legal_draft.txt",
     "run-summary.json", "release-decision.json",
     "collection-status.json",
 })
