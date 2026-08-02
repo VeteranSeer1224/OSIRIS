@@ -185,6 +185,11 @@ class ReleaseContext:
             reconstructed = max(0, min(100, round(total)))
             if reconstructed != self.dossier.get("risk_score"):
                 reasons.append("score reconstruction failed")
+            if metadata.get("abstain") is True:
+                reasons.append("deterministic scorer abstained because evidence is insufficient")
+            sufficiency = float(metadata.get("evidence_sufficiency", 0))
+            if not 0 <= sufficiency <= 1:
+                reasons.append("evidence sufficiency is outside the valid range")
         except (KeyError, TypeError, ValueError):
             reasons.append("scoring reconstruction metadata is invalid")
 

@@ -571,7 +571,7 @@ def extract_deterministic_risk_features(
     )
     if "cloudflare" in searchable:
         values["cloudflare_proxied"] = (1.0, "Cloudflare was explicitly observed in source records.")
-    if any(token in searchable for token in ("amazonaws.com", "amazon web services", "aws")):
+    if "amazonaws.com" in searchable or "amazon web services" in searchable or re.search(r"\baws\b", searchable):
         values["aws_infrastructure"] = (1.0, "AWS infrastructure was explicitly observed in source records.")
 
     sensitive_ports = {21, 22, 23, 25, 110, 135, 139, 445, 1433, 3306, 3389, 5432, 5900, 6379}

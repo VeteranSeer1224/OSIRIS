@@ -24,6 +24,29 @@ APPROVAL_PHRASE = "I CONFIRM LEGAL AUTHORITY"
 RUN_STATUSES = frozenset({"PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"})
 MAX_CASE_TARGETS = 100
 MAX_ADDITIONAL_SOURCE_BYTES = 100 * 1024 * 1024
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _load_project_dotenv() -> None:
+    """Load simple repository-local values without overriding process state."""
+    dotenv = PROJECT_ROOT / ".env"
+    if not dotenv.is_file():
+        return
+    import re
+    for raw in dotenv.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
 
 
 def _bounded_text(value: Any, name: str, maximum: int) -> str:
@@ -263,7 +286,11 @@ class InvestigationService:
             "authorization": str(auth_path),
         }
 
-    def preflight(self, *, llm_mode: str = "dry", live_collection: bool = False) -> dict[str, Any]:
+    def preflight(
+        self, *, llm_mode: str = "dry", live_collection: bool = False,
+        require_graph: bool = True, require_pdf: bool = True,
+    ) -> dict[str, Any]:
+        _load_project_dotenv()
         checks: list[dict[str, Any]] = []
 
         def check(name: str, function: Callable[[], Any], remediation: str) -> None:
@@ -273,15 +300,36 @@ class InvestigationService:
             except Exception as exc:
                 checks.append({"name": name, "status": "FAIL", "detail": str(exc), "remediation": remediation})
 
-        from run_pipeline import check_ethics_gate
+        def check_disclaimer() -> None:
+            path = PROJECT_ROOT / "DISCLAIMER.md"
+            content = path.read_text(encoding="utf-8")
+            if "- [x]" not in content and "- [X]" not in content:
+                raise ValueError("DISCLAIMER.md is not acknowledged")
+
         check("python", lambda: sys.version_info[:2] == (3, 12) or (_ for _ in ()).throw(ValueError(sys.version)), "Use the project-required Python 3.12 runtime.")
-        check("ethics_acknowledgement", check_ethics_gate, "Acknowledge DISCLAIMER.md according to project policy.")
+        check("ethics_acknowledgement", check_disclaimer, "Acknowledge DISCLAIMER.md according to project policy.")
         check("case_workspace", lambda: os.access(self.workspace.root, os.W_OK) or (_ for _ in ()).throw(ValueError("not writable")), "Choose a writable --cases-root.")
-        for module in ("pydantic", "pyvis", "weasyprint", "cryptography"):
+        required_modules = ["pydantic", "cryptography"]
+        if require_graph:
+            required_modules.append("pyvis")
+        if require_pdf:
+            required_modules.append("weasyprint")
+        for module in required_modules:
             check(module, lambda module=module: importlib.util.find_spec(module) or (_ for _ in ()).throw(ImportError(module)), f"Install the pinned {module} dependency.")
         if llm_mode == "openrouter":
             check("openai_sdk", lambda: importlib.util.find_spec("openai") or (_ for _ in ()).throw(ImportError("openai")), "Install the pinned OpenAI SDK.")
             check("openrouter_key", lambda: len(os.getenv("OPENROUTER_API_KEY", "")) >= 20 or (_ for _ in ()).throw(ValueError("OPENROUTER_API_KEY is missing or too short")), "Set OPENROUTER_API_KEY in the process or gitignored .env.")
+        elif llm_mode == "ollama":
+            def check_ollama() -> None:
+                from urllib.parse import urlparse
+                import requests
+                host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+                parsed = urlparse(host)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    raise ValueError("OLLAMA_HOST is not a valid HTTP(S) URL")
+                response = requests.get(host.rstrip("/") + "/api/tags", timeout=3)
+                response.raise_for_status()
+            check("ollama_runtime", check_ollama, "Start Ollama and verify OLLAMA_HOST, then retry.")
         if live_collection:
             import spiderfoot_runner
             check("spiderfoot_runtime", spiderfoot_runner.require_spiderfoot_runtime, "Run ./setup.sh and resolve the reported SpiderFoot dependency error.")
@@ -299,7 +347,10 @@ class InvestigationService:
             raise ValueError("case is closed; reopen it before running")
         if canonical_target(request.target) not in [canonical_target(item) for item in case.get("targets", [])]:
             raise ValueError("target is not listed in the case")
-        preflight = self.preflight(llm_mode=request.llm_mode, live_collection=request.collection == "live")
+        preflight = self.preflight(
+            llm_mode=request.llm_mode, live_collection=request.collection == "live",
+            require_graph=request.generate_graph, require_pdf=request.export_pdf,
+        )
         if preflight["status"] != "PASS":
             details = "; ".join(
                 f"{item['name']}: {item.get('detail', 'failed')}" for item in preflight["checks"]

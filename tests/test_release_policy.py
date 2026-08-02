@@ -151,3 +151,15 @@ def test_verified_typed_release_context_can_pass(tmp_path):
     }
     malformed = evaluate_release(replace(context, explanation_cards=malformed_cards))
     assert malformed.status == "BLOCKED"
+
+    abstained_dossier = {
+        **context.dossier,
+        "scoring_metadata": {
+            **context.dossier["scoring_metadata"],
+            "abstain": True,
+            "evidence_sufficiency": 0.01,
+        },
+    }
+    abstained = evaluate_release(replace(context, dossier=abstained_dossier))
+    assert abstained.status == "BLOCKED"
+    assert any("abstained" in reason for reason in abstained.reasons)
