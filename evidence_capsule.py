@@ -33,6 +33,7 @@ ALLOWED_ROOT_ARTIFACTS = frozenset({
     "misp_export.json", "stix_export.json", "lineage.json",
     "provenance.jsonld", "chain-of-custody.jsonl", "legal_draft.json",
     "run-summary.json", "release-decision.json",
+    "collection-status.json",
 })
 ALLOWED_PREFIXES = ("raw-evidence/blobs/sha256/", "raw-evidence/observations/")
 

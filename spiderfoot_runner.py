@@ -16,7 +16,9 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from artifact_io import atomic_write_json
 
 # Ensure OSIRIS/spiderfoot is in sys.path
 _SF_DIR = Path(__file__).resolve().parent / "spiderfoot"
@@ -35,6 +37,15 @@ except Exception as exc:  # third-party import errors can be non-ImportError
 
 class SpiderFootUnavailableError(RuntimeError):
     """Raised before collection when the optional SpiderFoot runtime is unusable."""
+
+
+class SpiderFootScanError(RuntimeError):
+    """Raised when a collector run does not reach FINISHED cleanly."""
+
+    def __init__(self, message: str, *, status: str, scan_id: str | None = None):
+        super().__init__(message)
+        self.status = status
+        self.scan_id = scan_id
 
 
 def require_spiderfoot_runtime() -> None:
@@ -150,13 +161,77 @@ STREAMLINED_MODULES = {
 }
 
 
+def _wait_for_scan(
+    process: Any,
+    dbh: Any,
+    scan_id: str,
+    *,
+    timeout_seconds: float,
+    cancel_check: Callable[[], bool] | None,
+    status_callback: Callable[[str, str], None] | None,
+    poll_interval: float,
+) -> str:
+    """Monitor a collector process and return only a successful terminal status."""
+    deadline = time.monotonic() + float(timeout_seconds)
+    terminal_status = "UNKNOWN"
+    try:
+        while True:
+            if cancel_check is not None and cancel_check():
+                terminal_status = "CANCELLED"
+                dbh.scanInstanceSet(scan_id, status="ABORT-REQUESTED")
+                raise SpiderFootScanError(
+                    "SpiderFoot scan cancelled by investigator",
+                    status=terminal_status, scan_id=scan_id,
+                )
+            if time.monotonic() >= deadline:
+                terminal_status = "TIMEOUT"
+                dbh.scanInstanceSet(scan_id, status="ABORT-REQUESTED")
+                raise SpiderFootScanError(
+                    f"SpiderFoot scan exceeded {timeout_seconds:g} seconds",
+                    status=terminal_status, scan_id=scan_id,
+                )
+            info = dbh.scanInstanceGet(scan_id)
+            if info:
+                terminal_status = str(info[5])
+                if status_callback is not None:
+                    status_callback(terminal_status, scan_id)
+                if terminal_status in {"ERROR-FAILED", "ABORT-REQUESTED", "ABORTED", "FINISHED"}:
+                    break
+            elif not process.is_alive() and process.exitcode is not None:
+                raise SpiderFootScanError(
+                    f"SpiderFoot worker exited unexpectedly with code {process.exitcode}",
+                    status="WORKER-EXITED", scan_id=scan_id,
+                )
+            time.sleep(float(poll_interval))
+    except KeyboardInterrupt as exc:
+        dbh.scanInstanceSet(scan_id, status="ABORT-REQUESTED")
+        raise SpiderFootScanError(
+            "SpiderFoot scan interrupted by investigator",
+            status="CANCELLED", scan_id=scan_id,
+        ) from exc
+    if terminal_status != "FINISHED":
+        raise SpiderFootScanError(
+            f"SpiderFoot scan did not finish successfully: {terminal_status}",
+            status=terminal_status, scan_id=scan_id,
+        )
+    return terminal_status
+
+
 def run_scan(
     target: str,
     output_file: str | Path,
     modules: str | list[Any] | None = None,
     use_case: str | None = None,
+    timeout_seconds: float = 900,
+    cancel_check: Callable[[], bool] | None = None,
+    status_callback: Callable[[str, str], None] | None = None,
+    poll_interval: float = 1.0,
 ) -> Path:
     require_spiderfoot_runtime()
+    if not 1 <= float(timeout_seconds) <= 86_400:
+        raise ValueError("timeout_seconds must be between 1 and 86400")
+    if not 0.05 <= float(poll_interval) <= 10:
+        raise ValueError("poll_interval must be between 0.05 and 10")
     output_file = Path(output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -179,7 +254,7 @@ def run_scan(
     }
 
     loggingQueue: mp.Queue[Any] = mp.Queue()
-    logListenerSetup(loggingQueue, sfConfig)
+    log_listener = logListenerSetup(loggingQueue, sfConfig)
     logWorkerSetup(loggingQueue)
 
     mod_dir = str(_SF_DIR / "modules")
@@ -254,17 +329,26 @@ def run_scan(
     p.daemon = True
     p.start()
 
-    # Wait for scan completion
-    while True:
-        time.sleep(1)
-        info = dbh.scanInstanceGet(scan_id)
-        if not info:
-            continue
-        status = info[5]
-        if status in ["ERROR-FAILED", "ABORT-REQUESTED", "ABORTED", "FINISHED"]:
-            logger.info(f"Scan finished with status: {status}")
-            p.join(timeout=30)
-            break
+    # Wait for scan completion, fail closed on timeout/cancellation/error, and
+    # guarantee that the worker and logging resources do not leak.
+    try:
+        terminal_status = _wait_for_scan(
+            p, dbh, scan_id, timeout_seconds=timeout_seconds,
+            cancel_check=cancel_check, status_callback=status_callback,
+            poll_interval=poll_interval,
+        )
+        logger.info("Scan terminal status: %s", terminal_status)
+    finally:
+        p.join(timeout=5)
+        if p.is_alive():
+            p.terminate()
+            p.join(timeout=5)
+        if p.is_alive() and hasattr(p, "kill"):
+            p.kill()
+            p.join(timeout=5)
+        log_listener.stop()
+        loggingQueue.close()
+        loggingQueue.join_thread()
 
     # Extract structured results
     rows = dbh.scanResultEvent(scan_id)
@@ -282,8 +366,7 @@ def run_scan(
             "confidence": r[5],
         })
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=4)
+    atomic_write_json(output_file, results)
 
     logger.info(f"Exported {len(results)} scan events to {output_file}")
     return output_file
@@ -297,6 +380,7 @@ def main():
     parser.add_argument("-o", "--output", help="Output JSON path")
     parser.add_argument("-m", "--modules", help="Comma-separated modules to run")
     parser.add_argument("-u", "--use-case", help="Use case (osiris_fast, osiris_full, threat_intel, infrastructure, identity, vulnerabilities, footprint, passive, investigate, all)")
+    parser.add_argument("--timeout", type=float, default=900, help="Maximum scan duration in seconds")
 
     args = parser.parse_args()
     target = args.target or args.target_pos
@@ -305,7 +389,7 @@ def main():
     if not target or not output:
         parser.error("Both target and output file must be specified.")
 
-    run_scan(target, output, modules=args.modules, use_case=args.use_case)
+    run_scan(target, output, modules=args.modules, use_case=args.use_case, timeout_seconds=args.timeout)
 
 
 if __name__ == "__main__":

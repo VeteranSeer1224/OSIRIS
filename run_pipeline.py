@@ -1,7 +1,9 @@
 import argparse
 import hashlib
 import json
+import os
 # Fixed local runner invocation; shell execution is never used.
+import shutil
 import subprocess  # nosec B404
 import sys
 import uuid
@@ -52,6 +54,34 @@ def ensure_dir(path):
         raise PipelineError(str(exc)) from exc
 
 
+def _atomic_run(output_dir: str | Path, operation):
+    """Publish a complete run directory in one rename or leave no final run."""
+    destination = Path(output_dir).resolve()
+    if destination.exists():
+        if not destination.is_dir():
+            raise PipelineError("run output destination is not a directory")
+        existing = sorted(item.name for item in destination.iterdir())
+        if existing:
+            raise PipelineError(
+                f"run output directory is not empty ({', '.join(existing[:5])}); "
+                "create a new isolated run"
+            )
+        destination.rmdir()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.with_name(f".{destination.name}.in-progress-{uuid.uuid4().hex}")
+    staging.mkdir()
+    try:
+        results = operation(staging)
+        os.replace(staging, destination)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return {
+        name: str(destination / Path(path).resolve().relative_to(staging))
+        for name, path in results.items()
+    }
+
+
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -77,13 +107,16 @@ def check_ethics_gate(disclaimer_path=None):
     return content
 
 
-def run_spiderfoot_scan(target, output_file, modules=None, use_case=None):
+def run_spiderfoot_scan(target, output_file, modules=None, use_case=None, timeout_seconds=900):
     """
     Helper to run SpiderFoot scan via spiderfoot_runner.
     """
     try:
         import spiderfoot_runner
-        spiderfoot_runner.run_scan(target, output_file, modules=modules, use_case=use_case)
+        spiderfoot_runner.run_scan(
+            target, output_file, modules=modules, use_case=use_case,
+            timeout_seconds=timeout_seconds,
+        )
         return output_file
     except ImportError:
         # Preserve backwards compatibility for deployments that execute the
@@ -103,13 +136,16 @@ def run_spiderfoot_scan(target, output_file, modules=None, use_case=None):
         command.extend(["-m", modules])
     if use_case:
         command.extend(["-u", use_case])
+    command.extend(["--timeout", str(timeout_seconds)])
 
     # The argv contains a fixed local script and validated options.
-    result = subprocess.run(  # nosec B603
-        command,
-        capture_output=True,
-        text=True
-    )
+    try:
+        result = subprocess.run(  # nosec B603
+            command, capture_output=True, text=True,
+            timeout=float(timeout_seconds) + 15,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PipelineError("SpiderFoot runner exceeded its cleanup deadline") from exc
 
     if result.returncode != 0:
         raise PipelineError(
@@ -136,6 +172,23 @@ def pipeline_from_existing_scan(
     _output_prepared: bool = False,
 ):
     """Run Sense → Mind → Web → Conscience → Report."""
+    if not _output_prepared:
+        return _atomic_run(output_dir, lambda staging: pipeline_from_existing_scan(
+            target=target,
+            spiderfoot_json=spiderfoot_json,
+            output_dir=staging,
+            do_export_pdf=do_export_pdf,
+            do_export_misp=do_export_misp,
+            mind_dry_run=mind_dry_run,
+            skip_graph=skip_graph,
+            do_export_dashboard=do_export_dashboard,
+            case_authorization_path=case_authorization_path,
+            collection_mode=collection_mode,
+            mind_backend=mind_backend,
+            mind_model=mind_model,
+            progress_callback=progress_callback,
+            _output_prepared=True,
+        ))
     _progress(progress_callback, "authorization", 5, "Validating ethics and case scope")
     check_ethics_gate()
     output_dir = Path(output_dir).resolve() if _output_prepared else ensure_dir(output_dir)
@@ -311,6 +364,7 @@ def pipeline_with_spiderfoot(
     mind_backend="ollama",
     mind_model=None,
     progress_callback: ProgressCallback | None = None,
+    spiderfoot_timeout: float = 900,
 ):
     _progress(progress_callback, "authorization", 3, "Validating active-collection authorization")
     if not case_authorization_path:
@@ -325,7 +379,24 @@ def pipeline_with_spiderfoot(
         validate_collection(authorization, target, CollectionMode.ACTIVE)
     except AuthorizationError as exc:
         raise PipelineError(f"Case authorization failed: {exc}") from exc
-    output_dir = ensure_dir(output_dir)
+    return _atomic_run(output_dir, lambda staging: _pipeline_with_spiderfoot_prepared(
+        target=target, output_dir=staging, do_export_pdf=do_export_pdf,
+        do_export_misp=do_export_misp, mind_dry_run=mind_dry_run,
+        skip_graph=skip_graph, do_export_dashboard=do_export_dashboard,
+        modules=modules, use_case=use_case,
+        case_authorization_path=case_authorization_path,
+        mind_backend=mind_backend, mind_model=mind_model,
+        progress_callback=progress_callback, spiderfoot_timeout=spiderfoot_timeout,
+    ))
+
+
+def _pipeline_with_spiderfoot_prepared(
+    *, target, output_dir, do_export_pdf, do_export_misp, mind_dry_run,
+    skip_graph, do_export_dashboard, modules, use_case,
+    case_authorization_path, mind_backend, mind_model, progress_callback,
+    spiderfoot_timeout,
+):
+    output_dir = Path(output_dir).resolve()
 
     spiderfoot_output = output_dir / "spiderfoot_output.json"
 
@@ -335,9 +406,10 @@ def pipeline_with_spiderfoot(
         spiderfoot_output,
         modules=modules,
         use_case=use_case,
+        timeout_seconds=spiderfoot_timeout,
     )
 
-    return pipeline_from_existing_scan(
+    results = pipeline_from_existing_scan(
         target,
         spiderfoot_output,
         output_dir,
@@ -353,6 +425,18 @@ def pipeline_with_spiderfoot(
         progress_callback=progress_callback,
         _output_prepared=True,
     )
+    # The collector export has been preserved content-addressably; do not
+    # publish a second mutable copy or include it accidentally in a capsule.
+    spiderfoot_output.unlink(missing_ok=True)
+    collection_status = output_dir / "collection-status.json"
+    save_json({
+        "schema_version": "1.0", "status": "FINISHED", "target": target,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "timeout_seconds": spiderfoot_timeout,
+        "modules": modules, "use_case": use_case,
+    }, collection_status)
+    results["collection_status"] = str(collection_status)
+    return results
 
 
 def main():
@@ -363,7 +447,7 @@ def main():
     parser.add_argument(
         "--target",
         required=True,
-        help="Target domain, IP, or organization"
+        help="Target domain or IP address"
     )
 
     parser.add_argument(

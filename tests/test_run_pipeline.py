@@ -115,7 +115,7 @@ def test_active_authorization_survives_spiderfoot_pipeline(tmp_path, monkeypatch
     auth_path = tmp_path / "authorization.json"
     auth_path.write_text(json.dumps(authorization), encoding="utf-8")
 
-    def fake_scan(target, output_file, modules=None, use_case=None):
+    def fake_scan(target, output_file, modules=None, use_case=None, timeout_seconds=900):
         Path(output_file).write_text(json.dumps([
             {"type": "DOMAIN_NAME", "data": target, "module": "fixture"}
         ]), encoding="utf-8")
