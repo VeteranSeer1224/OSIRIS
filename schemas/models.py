@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, field_validator, model_validator
+import math
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -95,22 +96,22 @@ class RawScan(BaseModel):
 # Contract 2 — dossier.json  (output of OSIRIS-Mind)
 # ---------------------------------------------------------------------------
 
-class OceanProfile(BaseModel):
-    openness: float = Field(..., ge=0.0, le=1.0)
-    conscientiousness: float = Field(..., ge=0.0, le=1.0)
-    extraversion: float = Field(..., ge=0.0, le=1.0)
-    agreeableness: float = Field(..., ge=0.0, le=1.0)
-    neuroticism: float = Field(..., ge=0.0, le=1.0)
-    rationale: str          # plain-English explanation of these scores
-
-
 class RiskFeature(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     feature: str            # machine-readable name, e.g. "breach_appearance_count"
-    value: Union[float, int, str]
+    value: float
     weight: float           # signed contribution to final risk score
     plain_language: str     # human-readable description for XAI card
     normalized_value: Optional[float] = None
     contribution_points: Optional[float] = None
+
+    @field_validator("value", "weight", "normalized_value", "contribution_points")
+    @classmethod
+    def finite_numbers_only(cls, value):
+        if value is not None and not math.isfinite(float(value)):
+            raise ValueError("scoring values must be finite")
+        return value
 
 
 class ModelMetadata(BaseModel):
@@ -128,14 +129,12 @@ class InsufficientDataFlag(BaseModel):
 
 
 class DimensionProfile(BaseModel):
-    """Six-dimension cognitive profile for a target entity."""
+    """Evidence-bound narrative profile; psychometric inference is excluded."""
+    model_config = ConfigDict(extra="forbid")
+
     identity: str
     geo_temporal: str
-    # Experimental-only legacy fields. They are intentionally not required by
-    # the operational schema and are never valid scoring inputs by default.
-    ocean_psychology: Optional[OceanProfile] = None
     technical_stack: List[str]
-    ideology: Optional[str] = None
     opsec_posture: str
 
 

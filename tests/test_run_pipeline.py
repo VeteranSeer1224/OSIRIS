@@ -27,14 +27,15 @@ def test_pipeline_end_to_end_creates_review_only_output_for_stub_dossier(tmp_pat
         }
     ]
 
-    sf_file = tmp_path / "sf_output.json"
+    sf_file = tmp_path / "source" / "sf_output.json"
+    sf_file.parent.mkdir()
     with open(sf_file, "w") as f:
         json.dump(sf_data, f)
 
     results = pipeline_from_existing_scan(
         target="example.com",
         spiderfoot_json=str(sf_file),
-        output_dir=str(tmp_path),
+        output_dir=str(tmp_path / "run"),
         do_export_pdf=True,
         do_export_misp=False,
         mind_dry_run=True,
@@ -79,7 +80,8 @@ def test_pipeline_end_to_end_creates_review_only_output_for_stub_dossier(tmp_pat
 
 
 def test_stub_pipeline_cannot_export_misp(tmp_path):
-    sf_file = tmp_path / "sf_output.json"
+    sf_file = tmp_path / "source" / "sf_output.json"
+    sf_file.parent.mkdir()
     sf_file.write_text(json.dumps([
         {"type": "DOMAIN_NAME", "data": "example.com", "module": "sfp_test"}
     ]), encoding="utf-8")
@@ -88,7 +90,7 @@ def test_stub_pipeline_cannot_export_misp(tmp_path):
         pipeline_from_existing_scan(
             target="example.com",
             spiderfoot_json=str(sf_file),
-            output_dir=str(tmp_path),
+            output_dir=str(tmp_path / "run"),
             do_export_misp=True,
             mind_dry_run=True,
             skip_graph=True,

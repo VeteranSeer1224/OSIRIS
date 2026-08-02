@@ -3,6 +3,7 @@ import hashlib
 import ipaddress
 import json
 import re
+from typing import Any
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,14 @@ IPV4_RE = re.compile(
 EMAIL_RE = re.compile(
     r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
 )
+
+MAX_INPUT_BYTES = 25 * 1024 * 1024
+MAX_INPUT_RECORDS = 50_000
+SUPPORTED_INPUT_SUFFIXES = frozenset({".json", ".csv"})
+
+
+class InputValidationError(ValueError):
+    """Raised before processing an unsupported or unsafe evidence export."""
 
 ENTITY_MAP = {
     "INTERNET_NAME": "domain",
@@ -245,6 +254,26 @@ def extract_events(raw_data):
     return events
 
 
+def _validate_record(record: Any, index: int) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        raise InputValidationError(f"record {index} must be a JSON object")
+    if not isinstance(record.get("type"), str) or not record["type"].strip():
+        raise InputValidationError(f"record {index} has no event type")
+    if "data" not in record:
+        raise InputValidationError(f"record {index} has no data field")
+    return record
+
+
+def _validate_record_count(records: list[Any]) -> list[dict[str, Any]]:
+    if not records:
+        raise InputValidationError("evidence export contains no records")
+    if len(records) > MAX_INPUT_RECORDS:
+        raise InputValidationError(
+            f"evidence export has {len(records)} records; maximum is {MAX_INPUT_RECORDS}"
+        )
+    return [_validate_record(record, index) for index, record in enumerate(records)]
+
+
 def load_spiderfoot_input(path):
     """
     Load a SpiderFoot export from either a CSV or JSON file.
@@ -252,13 +281,31 @@ def load_spiderfoot_input(path):
     SpiderFoot CSV columns: Updated, Type, Module, Source, F/P, Data
     Returns a list of dicts with keys: type, module, source, data
     """
-    path = str(path)
+    source = Path(path).resolve()
+    if not source.is_file():
+        raise InputValidationError(f"evidence input does not exist: {source}")
+    if source.suffix.lower() not in SUPPORTED_INPUT_SUFFIXES:
+        raise InputValidationError("evidence input must be a .json or .csv export")
+    byte_length = source.stat().st_size
+    if byte_length <= 0:
+        raise InputValidationError("evidence input is empty")
+    if byte_length > MAX_INPUT_BYTES:
+        raise InputValidationError(
+            f"evidence input is {byte_length} bytes; maximum is {MAX_INPUT_BYTES}"
+        )
 
-    if path.lower().endswith(".csv"):
+    if source.suffix.lower() == ".csv":
         rows = []
-        with open(path, "r", encoding="utf-8") as f:
+        with source.open("r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
+            required_columns = {"Type", "Data"}
+            if reader.fieldnames is None or not required_columns.issubset(reader.fieldnames):
+                raise InputValidationError("SpiderFoot CSV requires Type and Data columns")
             for row in reader:
+                if len(rows) >= MAX_INPUT_RECORDS:
+                    raise InputValidationError(
+                        f"evidence export exceeds {MAX_INPUT_RECORDS} records"
+                    )
                 # Skip false positives if flagged
                 if row.get("F/P", "0").strip() == "1":
                     continue
@@ -269,11 +316,23 @@ def load_spiderfoot_input(path):
                     "data": row.get("Data", "").strip(),
                     "updated": row.get("Updated", "").strip(),
                 })
-        return rows
+        return _validate_record_count(rows)
     else:
-        # Assume JSON
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with source.open("r", encoding="utf-8") as f:
+                value = json.load(f)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise InputValidationError(f"invalid JSON evidence export: {exc}") from exc
+        if isinstance(value, dict) and "entities" in value:
+            raw_records = value.get("raw_module_output", {}).get("records", [])
+            if isinstance(raw_records, list) and len(raw_records) > MAX_INPUT_RECORDS:
+                raise InputValidationError(
+                    f"processed scan embeds more than {MAX_INPUT_RECORDS} records"
+                )
+            return value
+        if not isinstance(value, list):
+            raise InputValidationError("SpiderFoot JSON must be an array of event objects")
+        return _validate_record_count(value)
 
 
 def generate_raw_scan(target, spiderfoot_input):

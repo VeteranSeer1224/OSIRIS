@@ -1030,8 +1030,8 @@ def _robustness_check(dossiers: Sequence[Mapping[str, Any]], threshold: float = 
     # Only non-semantic structural invariance affects robustness PASS.
     delta_ok = max_delta <= threshold
     no_flip = not any_decision_flip
-    stability_ok = True
-    passed = bool(deltas) and delta_ok and no_flip
+    stability_ok = feature_stability >= 0.5
+    passed = bool(deltas) and delta_ok and no_flip and stability_ok
 
     return {
         "passed": passed,

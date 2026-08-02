@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from sense_clean import generate_raw_scan
+from sense_clean import generate_raw_scan, load_spiderfoot_input
 from report_build import build_report, export_pdf, export_misp
 from schema_validation import (
     validate_raw_scan,
@@ -27,6 +27,7 @@ from case_authorization import (
 from evidence_store import LocalEvidenceStore
 from provenance import build_provenance
 from schemas.models import Dossier, RawScan
+from artifact_io import ArtifactIOError, atomic_write_json, require_empty_directory
 
 from mind.mind_profile import profile  # noqa: E402
 
@@ -44,9 +45,11 @@ def _progress(callback: ProgressCallback | None, stage: str, percent: int, detai
 
 
 def ensure_dir(path):
-    path = Path(path).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    """Compatibility alias for strict isolated-run creation."""
+    try:
+        return require_empty_directory(path)
+    except ArtifactIOError as exc:
+        raise PipelineError(str(exc)) from exc
 
 
 def load_json(path):
@@ -55,8 +58,7 @@ def load_json(path):
 
 
 def save_json(data, path):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    atomic_write_json(path, data)
 
 
 
@@ -131,11 +133,14 @@ def pipeline_from_existing_scan(
     mind_backend="ollama",
     mind_model=None,
     progress_callback: ProgressCallback | None = None,
+    _output_prepared: bool = False,
 ):
     """Run Sense → Mind → Web → Conscience → Report."""
     _progress(progress_callback, "authorization", 5, "Validating ethics and case scope")
     check_ethics_gate()
-    output_dir = ensure_dir(output_dir)
+    output_dir = Path(output_dir).resolve() if _output_prepared else ensure_dir(output_dir)
+    if _output_prepared and not output_dir.is_dir():
+        raise PipelineError("prepared run output directory is missing")
     run_id = str(uuid.uuid4())
     run_timestamp = datetime.now(timezone.utc).isoformat()
     authorization = None
@@ -146,18 +151,23 @@ def pipeline_from_existing_scan(
         except AuthorizationError as exc:
             raise PipelineError(f"Case authorization failed: {exc}") from exc
     case_id = authorization.case_id if authorization else "UNAUTHORIZED-LEGACY"
+    try:
+        validated_input = load_spiderfoot_input(spiderfoot_json)
+    except (OSError, ValueError) as exc:
+        raise PipelineError(f"Evidence input validation failed: {exc}") from exc
+    source_path = Path(spiderfoot_json)
     evidence_store = LocalEvidenceStore(output_dir)
     raw_record = evidence_store.preserve(
-        Path(spiderfoot_json).read_bytes(), case_id=case_id, run_id=run_id,
+        source_path.read_bytes(), case_id=case_id, run_id=run_id,
         source_type="spiderfoot_export", source_identifier=str(spiderfoot_json),
-        mime_type="application/json",
+        mime_type="text/csv" if source_path.suffix.lower() == ".csv" else "application/json",
     )
     evidence_store.verify(raw_record)
 
     _progress(progress_callback, "collection", 18, "Preserving and normalizing source evidence")
     raw_scan = generate_raw_scan(
         target,
-        spiderfoot_json
+        validated_input
     )
     raw_scan["case_id"] = case_id
     raw_scan["run_id"] = run_id
@@ -341,6 +351,7 @@ def pipeline_with_spiderfoot(
         case_authorization_path=case_authorization_path,
         collection_mode=CollectionMode.ACTIVE,
         progress_callback=progress_callback,
+        _output_prepared=True,
     )
 
 

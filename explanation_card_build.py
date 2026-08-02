@@ -503,6 +503,21 @@ def build_artifacts(config: BuildConfig) -> BuildArtifacts:
         analyses.append(analysis)
         cards.append(_build_card_from_analysis(dossier, analysis, max_top_features=config.max_top_features))
 
+    initialize = analyses[0].get("initialize", {}) if analyses else {}
+    backend_name = _safe_str(initialize.get("backend"), "unknown")
+    backend_disclosure = {
+        "active_backend": backend_name,
+        "real_explabox_available": backend_name == "explabox",
+        "cohort_descriptives_backend": backend_name,
+        "per_dossier_attribution_backend": "deterministic_signed_weights",
+        "fallback_active": backend_name != "explabox",
+        "note": _safe_str(initialize.get("note"), (
+            "Explabox is unavailable or disabled; deterministic OSIRIS checks are active."
+            if backend_name != "explabox" else
+            "Explabox is used only for cohort descriptives; deterministic signed weights produce attributions."
+        )),
+    }
+
     explanation_cards = {
         "schema_version": "1.0",
         "generated_at": _utc_now(),
@@ -510,12 +525,15 @@ def build_artifacts(config: BuildConfig) -> BuildArtifacts:
         "targets": [str(d.get("target", "unknown")) for d in dossiers],
         "card_count": len(cards),
         "cards": cards,
+        "backend_disclosure": backend_disclosure,
     }
 
     fairness_report_md = _build_fairness_report(cards, analyses, target_label)
     fairness_report_json = _build_fairness_report_json(cards, analyses, target_label)
     robustness_report_md = _build_robustness_report(cards, analyses, target_label)
     robustness_report_json = _build_robustness_report_json(cards, analyses, target_label)
+    fairness_report_json["backend_disclosure"] = backend_disclosure
+    robustness_report_json["backend_disclosure"] = backend_disclosure
 
     validate_explanation_cards(explanation_cards)
     ExplanationCards.model_validate(explanation_cards)

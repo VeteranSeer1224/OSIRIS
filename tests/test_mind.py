@@ -193,20 +193,12 @@ class TestSchemaValidation:
 
     VALID_JSON = json.dumps({
         "target": "example.com",
-        "injection_detected": False,
         "profile": {
             "identity": "Test identity.",
             "geo_temporal": "Test geo.",
-            "ocean_psychology": {
-                "openness": 0.5, "conscientiousness": 0.5, "extraversion": 0.5,
-                "agreeableness": 0.5, "neuroticism": 0.5, "rationale": "Test.",
-            },
             "technical_stack": ["nginx"],
-            "ideology": None,
             "opsec_posture": "Test opsec.",
         },
-        "risk_score": 10,
-        "risk_features": [{"feature": "f", "value": 1, "weight": 0.1, "plain_language": "test"}],
         "insufficient_data_flags": [],
         "executive_summary": "Test summary.",
     })
@@ -218,7 +210,7 @@ class TestSchemaValidation:
     def test_markdown_fencing_stripped(self):
         fenced = f"```json\n{self.VALID_JSON}\n```"
         result = parse_and_validate(fenced, "example.com")
-        assert result["risk_score"] == 10
+        assert result["profile"]["technical_stack"] == ["nginx"]
 
     def test_missing_root_key_raises(self):
         data = json.loads(self.VALID_JSON)
@@ -235,13 +227,13 @@ class TestSchemaValidation:
     def test_invalid_risk_score_raises(self):
         data = json.loads(self.VALID_JSON)
         data["risk_score"] = 150
-        with pytest.raises(ValueError, match="risk_score"):
+        with pytest.raises(ValueError, match="prohibited operational fields"):
             parse_and_validate(json.dumps(data), "example.com")
 
     def test_empty_risk_features_raises(self):
         data = json.loads(self.VALID_JSON)
         data["risk_features"] = []
-        with pytest.raises(ValueError, match="risk_features"):
+        with pytest.raises(ValueError, match="prohibited operational fields"):
             parse_and_validate(json.dumps(data), "example.com")
 
     def test_non_json_raises(self):
@@ -342,10 +334,10 @@ class TestPromptLoading:
         assert "injection" in text.lower()
         assert "v2" in text.lower()
 
-    def test_prompt_v2_has_calibration_table(self):
+    def test_prompt_v2_excludes_model_scoring(self):
         text = load_prompt("v2")
-        assert "example.com" in text
-        assert "scanme.nmap.org" in text
+        assert "do not output risk scores" in text.lower()
+        assert "ocean" in text.lower()
 
     def test_missing_prompt_raises(self):
         with pytest.raises(FileNotFoundError):

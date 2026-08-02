@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 from dataclasses import dataclass
+from artifact_io import atomic_write_json
 
 # ── optional heavy deps — fail gracefully so unit tests can import without them
 
@@ -412,21 +413,18 @@ def _strip_markdown_fencing(text: str) -> str:
     return text
 
 
-_REQUIRED_KEYS = {
-    "target", "injection_detected", "profile",
-    "risk_score", "risk_features", "executive_summary",
+_REQUIRED_KEYS = {"target", "profile", "insufficient_data_flags", "executive_summary"}
+_ALLOWED_MODEL_KEYS = set(_REQUIRED_KEYS)
+
+_PROHIBITED_MODEL_KEYS = {
+    "risk_score", "risk_level", "risk_features", "weights", "scoring_metadata",
+    "ocean_psychology", "ideology",
 }
 
 _REQUIRED_PROFILE_KEYS = {
     "identity", "geo_temporal",
     "technical_stack", "opsec_posture",
 }
-
-_REQUIRED_OCEAN_KEYS = {
-    "openness", "conscientiousness", "extraversion",
-    "agreeableness", "neuroticism", "rationale",
-}
-
 
 def parse_and_validate(raw_text: str, target: str) -> Dict[str, Any]:
     """
@@ -454,30 +452,157 @@ def parse_and_validate(raw_text: str, target: str) -> Dict[str, Any]:
     if missing_root:
         raise ValueError(f"Dossier missing required keys: {missing_root}")
 
+    prohibited_root = _PROHIBITED_MODEL_KEYS & set(data)
+    if prohibited_root:
+        raise ValueError(
+            f"LLM response contains prohibited operational fields: {sorted(prohibited_root)}"
+        )
+    unexpected_root = set(data) - _ALLOWED_MODEL_KEYS
+    if unexpected_root:
+        raise ValueError(f"LLM response contains unexpected fields: {sorted(unexpected_root)}")
     profile = data.get("profile", {})
+    if not isinstance(profile, dict):
+        raise ValueError("profile must be a JSON object")
     missing_profile = _REQUIRED_PROFILE_KEYS - set(profile.keys())
     if missing_profile:
         raise ValueError(f"profile missing required keys: {missing_profile}")
 
-    # Legacy experimental OCEAN content may be parsed for backwards
-    # compatibility, but it is not required for an operational dossier.
-    if "ocean_psychology" in profile:
-        ocean = profile["ocean_psychology"]
-        missing_ocean = _REQUIRED_OCEAN_KEYS - set(ocean.keys())
-        if missing_ocean:
-            raise ValueError(f"ocean_psychology missing required keys: {missing_ocean}")
-
-    score = data.get("risk_score")
-    if not isinstance(score, (int, float)) or not (0 <= score <= 100):
-        raise ValueError(f"risk_score must be 0-100, got: {score!r}")
-
-    if not isinstance(data.get("risk_features"), list) or not data["risk_features"]:
-        raise ValueError("risk_features must be a non-empty list")
+    prohibited_profile = {"ocean_psychology", "ideology", "risk_score", "risk_features"} & set(profile)
+    if prohibited_profile:
+        raise ValueError(
+            f"LLM profile contains prohibited fields: {sorted(prohibited_profile)}"
+        )
+    unexpected_profile = set(profile) - _REQUIRED_PROFILE_KEYS
+    if unexpected_profile:
+        raise ValueError(f"LLM profile contains unexpected fields: {sorted(unexpected_profile)}")
+    if not isinstance(data.get("insufficient_data_flags"), list):
+        raise ValueError("insufficient_data_flags must be a list")
 
     # Normalise: ensure target matches what we passed in
     data["target"] = target
 
     return data
+
+
+MAX_LLM_ENTITIES = 200
+MAX_LLM_EVENTS = 100
+MAX_LLM_CONTEXT_BYTES = 100_000
+
+
+def build_llm_context(scan: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a bounded narrative context without raw SpiderFoot output."""
+    entities = []
+    for item in scan.get("entities", [])[:MAX_LLM_ENTITIES]:
+        if not isinstance(item, dict):
+            continue
+        entities.append({
+            "type": str(item.get("type", ""))[:64],
+            "value": str(item.get("value", ""))[:500],
+            "source_module": str(item.get("source_module", ""))[:128],
+            "evidence_id": str(item.get("evidence_id", ""))[:128],
+        })
+    events = []
+    for item in scan.get("events", [])[:MAX_LLM_EVENTS]:
+        if not isinstance(item, dict):
+            continue
+        events.append({
+            "type": str(item.get("type", ""))[:64],
+            "entity": str(item.get("entity", ""))[:500],
+            "observed_at": item.get("observed_at"),
+            "source": str(item.get("source", ""))[:128],
+        })
+    context = {
+        "target": str(scan.get("target", ""))[:500],
+        "scan_date": scan.get("scan_date"),
+        "entity_count": len(scan.get("entities", [])),
+        "event_count": len(scan.get("events", [])),
+        "entities_truncated": len(scan.get("entities", [])) > len(entities),
+        "events_truncated": len(scan.get("events", [])) > len(events),
+        "entities": entities,
+        "events": events,
+    }
+    encoded = json.dumps(context, ensure_ascii=False, default=str).encode("utf-8")
+    if len(encoded) > MAX_LLM_CONTEXT_BYTES:
+        raise ValueError(
+            f"bounded LLM context is {len(encoded)} bytes; maximum is {MAX_LLM_CONTEXT_BYTES}"
+        )
+    return context
+
+
+def extract_deterministic_risk_features(
+    scan: Dict[str, Any], *, injection_detected: bool = False
+) -> List[Dict[str, Any]]:
+    """Derive the complete operational feature vector from normalized evidence."""
+    entities = [item for item in scan.get("entities", []) if isinstance(item, dict)]
+    events = [item for item in scan.get("events", []) if isinstance(item, dict)]
+    raw = scan.get("raw_module_output", {})
+    records = raw.get("records", []) if isinstance(raw, dict) else []
+    records = [item for item in records if isinstance(item, dict)]
+    target = str(scan.get("target", "")).strip().lower().rstrip(".")
+
+    values: Dict[str, tuple[float, str]] = {
+        "entity_count": (
+            float(len(entities)), f"Normalized evidence contains {len(entities)} unique entities."
+        ),
+    }
+    breach_count = sum(1 for item in events if item.get("type") == "breach_appearance")
+    if breach_count:
+        values["breach_appearance_count"] = (
+            float(breach_count), f"Evidence contains {breach_count} breach-appearance events."
+        )
+    email_count = sum(1 for item in entities if item.get("type") == "email")
+    if email_count:
+        values["exposed_email_count"] = (
+            float(email_count), f"Evidence contains {email_count} unique email observations."
+        )
+    subdomain_count = sum(1 for item in entities if item.get("type") == "subdomain")
+    if subdomain_count:
+        values["subdomain_count"] = (
+            float(subdomain_count), f"Evidence contains {subdomain_count} normalized subdomains."
+        )
+    ipv6 = any(
+        item.get("type") == "ip" and ":" in str(item.get("value", "")) for item in entities
+    )
+    if ipv6:
+        values["ipv6_enabled"] = (1.0, "At least one normalized IPv6 address was observed.")
+
+    searchable = " ".join(
+        str(item.get("data", ""))[:1000].lower() for item in records[:5_000]
+    )
+    if "cloudflare" in searchable:
+        values["cloudflare_proxied"] = (1.0, "Cloudflare was explicitly observed in source records.")
+    if any(token in searchable for token in ("amazonaws.com", "amazon web services", "aws")):
+        values["aws_infrastructure"] = (1.0, "AWS infrastructure was explicitly observed in source records.")
+
+    sensitive_ports = {21, 22, 23, 25, 110, 135, 139, 445, 1433, 3306, 3389, 5432, 5900, 6379}
+    observed_ports: set[int] = set()
+    for item in records[:5_000]:
+        record_type = str(item.get("type", "")).upper()
+        if "PORT" not in record_type:
+            continue
+        for token in re.findall(r"\b\d{1,5}\b", str(item.get("data", ""))[:500]):
+            port = int(token)
+            if port in sensitive_ports:
+                observed_ports.add(port)
+    if observed_ports:
+        values["open_ports_sensitive"] = (
+            float(len(observed_ports)),
+            f"Source records explicitly identify sensitive ports: {sorted(observed_ports)}.",
+        )
+
+    if target in {"scanme.nmap.org", "testphp.vulnweb.com"} or target.endswith(".example"):
+        values["deliberate_test_target"] = (
+            1.0, "Target matches the versioned deliberate-test target policy."
+        )
+    if injection_detected:
+        values["injection_attempt_detected"] = (
+            1.0, "Input sanitization detected an instruction-injection pattern."
+        )
+
+    return [
+        {"feature": name, "value": value, "plain_language": plain}
+        for name, (value, plain) in values.items()
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -511,28 +636,18 @@ def enrich_dossier(
     data["profiled_at"] = datetime.now(timezone.utc).isoformat()
     data["processing_time_seconds"] = round(time.time() - run_start, 2)
 
-    # Merge injection detection: LLM may have set this too; OR with our pre-check
-    data["injection_detected"] = data.get("injection_detected", False) or injection_detected
-    if injection_detail and not data.get("injection_details"):
-        data["injection_details"] = injection_detail
-
-    # If injection was detected server-side, add it as a risk feature if LLM missed it
-    if injection_detected:
-        existing_features = {f["feature"] for f in data.get("risk_features", [])}
-        if "injection_attempt_detected" not in existing_features:
-            data["risk_features"].append({
-                "feature": "injection_attempt_detected",
-                "value": 1,
-                "weight": DEFAULT_WEIGHTS.get("injection_attempt_detected", 15.0),
-                "plain_language": "Prompt-injection pattern detected in scan data — adversary may be attempting to manipulate analysis.",
-            })
+    data["injection_detected"] = injection_detected
+    data["injection_details"] = injection_detail
+    deterministic_features = extract_deterministic_risk_features(
+        scan, injection_detected=injection_detected
+    )
 
     # ── DETERMINISTIC RE-SCORING ──
     # Override the LLM's risk_score with the deterministic scorer output.
     # The LLM extracts features; the scorer calculates the score.
     is_dry_run = backend.name == "dry_run"
     score_mode = "STUB" if is_dry_run else "REAL"
-    scoring = _default_scorer.score(data.get("risk_features", []), score_mode=score_mode)
+    scoring = _default_scorer.score(deterministic_features, score_mode=score_mode)
 
     data["risk_score"] = scoring.risk_score
     data["risk_level"] = scoring.risk_level
@@ -544,7 +659,7 @@ def enrich_dossier(
     for c in scoring.contributions:
         # Find the original feature dict to preserve plain_language from LLM
         original = next(
-            (f for f in data.get("risk_features", [])
+            (f for f in deterministic_features
              if isinstance(f, dict) and f.get("feature") == c.feature),
             {},
         )
@@ -610,10 +725,11 @@ def profile(
     log.info("Using prompt version: %s", prompt_version)
 
     # ── Build user message
+    llm_context = build_llm_context(clean_scan)
     user_message = (
         "Analyse this OSINT scan data and return a dossier JSON "
         "matching your system prompt schema:\n\n"
-        + json.dumps(clean_scan, indent=2, default=str)
+        + json.dumps(llm_context, indent=2, default=str)
     )
 
     if dry_run:
@@ -629,7 +745,7 @@ def profile(
         )
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(dossier, indent=2, default=str), encoding="utf-8")
+        atomic_write_json(output_path, dossier)
         log.info("✓ Stub dossier written → %s", output_path)
         return dossier
     else:
@@ -656,7 +772,7 @@ def profile(
         # ── Write output
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(dossier, indent=2, default=str), encoding="utf-8")
+        atomic_write_json(output_path, dossier)
         log.info(
             "✓ Dossier written → %s  [risk_score=%d, level=%s, time=%.1fs]",
             output_path,

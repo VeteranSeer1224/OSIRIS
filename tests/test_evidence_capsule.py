@@ -89,3 +89,11 @@ def test_capsule_rejects_secret_source_and_post_build_symlink(tmp_path):
     report.symlink_to(original)
     with pytest.raises(CapsuleVerificationError, match="symlink"):
         verify_capsule(capsule, trusted_public_key=public_key)
+
+
+def test_capsule_rejects_stale_non_allowlisted_run_file(tmp_path):
+    source = _source(tmp_path / "source")
+    (source / "old-debug-dump.json").write_text("{}", encoding="utf-8")
+    key = generate_development_key(tmp_path / "signing.pem")
+    with pytest.raises(CapsuleVerificationError, match="non-allowlisted"):
+        build_capsule(source, tmp_path / "capsule", key_path=key)

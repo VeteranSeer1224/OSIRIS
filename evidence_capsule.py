@@ -25,6 +25,16 @@ IDENTITY_ARTIFACTS = (
     "report.json", "lineage.json",
 )
 FORBIDDEN_SOURCE_NAMES = frozenset({".env", "id_rsa", "id_ed25519"})
+ALLOWED_ROOT_ARTIFACTS = frozenset({
+    "raw_scan.json", "dossier.json", "explanation_cards.json",
+    "fairness_report.md", "fairness_report.json",
+    "robustness_report.md", "robustness_report.json",
+    "report.json", "report.pdf", "graph.html", "xai_dashboard.html",
+    "misp_export.json", "stix_export.json", "lineage.json",
+    "provenance.jsonld", "chain-of-custody.jsonl", "legal_draft.json",
+    "run-summary.json", "release-decision.json",
+})
+ALLOWED_PREFIXES = ("raw-evidence/blobs/sha256/", "raw-evidence/observations/")
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -140,6 +150,11 @@ def _validate_source_files(source: Path, key_path: Path) -> None:
             raise CapsuleVerificationError(f"capsule source contains an unvalidated secret file: {path.name}")
         if b"PRIVATE KEY" in path.read_bytes()[:4096]:
             raise CapsuleVerificationError(f"capsule source contains private-key material: {path.name}")
+        relative = path.relative_to(source).as_posix()
+        if relative not in ALLOWED_ROOT_ARTIFACTS and not relative.startswith(ALLOWED_PREFIXES):
+            raise CapsuleVerificationError(
+                f"capsule source contains a non-allowlisted artifact: {relative}"
+            )
 
 
 def build_capsule(
