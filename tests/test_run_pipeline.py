@@ -97,6 +97,20 @@ def test_stub_pipeline_cannot_export_misp(tmp_path):
         )
 
 
+def test_pipeline_rejects_nonempty_destination_without_touching_stale_file(tmp_path):
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps([
+        {"type": "DOMAIN_NAME", "data": "example.com", "module": "fixture"}
+    ]), encoding="utf-8")
+    destination = tmp_path / "run"
+    destination.mkdir()
+    stale = destination / "stale.json"
+    stale.write_text("{}", encoding="utf-8")
+    with pytest.raises(run_pipeline.PipelineError, match="not empty"):
+        pipeline_from_existing_scan("example.com", source, destination)
+    assert stale.read_text(encoding="utf-8") == "{}"
+
+
 def test_active_authorization_survives_spiderfoot_pipeline(tmp_path, monkeypatch):
     now = datetime.now(timezone.utc)
     authorization = {
@@ -122,15 +136,18 @@ def test_active_authorization_survives_spiderfoot_pipeline(tmp_path, monkeypatch
         return output_file
 
     monkeypatch.setattr(run_pipeline, "run_spiderfoot_scan", fake_scan)
+    checkpoint = tmp_path / "checkpoint.json"
     results = pipeline_with_spiderfoot(
         "example.test", tmp_path / "output", skip_graph=True,
         case_authorization_path=auth_path,
+        checkpoint_path=checkpoint,
     )
     report = json.loads(Path(results["report"]).read_text(encoding="utf-8"))
     lineage = json.loads(Path(results["lineage"]).read_text(encoding="utf-8"))
     assert report["report_metadata"]["case_id"] == "CASE-ACTIVE"
     assert report["case_authorization"]["case_id"] == "CASE-ACTIVE"
     assert lineage["case_id"] == "CASE-ACTIVE"
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))[0]["data"] == "example.test"
 
 
 def test_pipeline_reports_stage_progress(tmp_path):

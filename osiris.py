@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     wizard.add_argument("--cases-root", dest="wizard_cases_root", help="override the case workspace directory")
     preflight = subparsers.add_parser("preflight", help="validate local runtime readiness")
     preflight.add_argument("--llm-mode", choices=("dry", "openrouter", "ollama"), default="dry")
+    preflight.add_argument("--model", help="model identifier for live LLM preflight")
     preflight.add_argument("--live", action="store_true", help="include live SpiderFoot checks")
 
     case = subparsers.add_parser("case", help="create and manage cases")
@@ -55,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     case_create.add_argument("--retention", default="Retain per case authority; review at closure")
     case_create.add_argument("--marking", default="TLP:CLEAR")
     case_sub.add_parser("list", help="list cases")
+    case_import = case_sub.add_parser("import", help="import and validate a case JSON")
+    case_import.add_argument("path")
     case_show = case_sub.add_parser("show", help="show one case")
     case_show.add_argument("case_id")
     case_status = case_sub.add_parser("status", help="open or close a case")
@@ -138,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in {None, "wizard"}:
             return run_wizard(cases_root=getattr(args, "wizard_cases_root", None) or args.cases_root)
         if args.command == "preflight":
-            result = service.preflight(llm_mode=args.llm_mode, live_collection=args.live)
+            result = service.preflight(llm_mode=args.llm_mode, live_collection=args.live, model=args.model)
             _print_result(result, args.as_json)
             return 0 if result["status"] == "PASS" else 3
         if args.command == "case":
@@ -152,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
                 })
             elif args.case_command == "list":
                 result = {"status": "PASS", "cases": service.list_cases()}
+            elif args.case_command == "import":
+                result = service.import_case(args.path)
             elif args.case_command == "show":
                 result = {"status": "PASS", "case": service.get_case(args.case_id)}
             elif args.case_command == "status":

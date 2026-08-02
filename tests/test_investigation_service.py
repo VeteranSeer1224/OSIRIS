@@ -1,4 +1,5 @@
 import io
+import importlib.util
 import json
 from pathlib import Path
 
@@ -86,3 +87,52 @@ def test_case_service_rejects_unsupported_target_and_excessive_modules(tmp_path:
         assert "sfp_" in str(exc)
     else:
         raise AssertionError("invalid module name was accepted")
+
+
+def test_case_import_and_dependency_preflight_failure(tmp_path: Path, monkeypatch):
+    workspace = CaseWorkspace(tmp_path / "cases")
+    service = InvestigationService(workspace)
+    source = tmp_path / "case.json"
+    source.write_text(json.dumps(_case_metadata()), encoding="utf-8")
+    assert service.import_case(str(source))["status"] == "CREATED"
+
+    original_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda name: None if name == "cryptography" else original_find_spec(name),
+    )
+    result = service.preflight(require_graph=False, require_pdf=False)
+    failed = {item["name"]: item for item in result["checks"] if item["status"] == "FAIL"}
+    assert result["status"] == "FAIL"
+    assert "Install the pinned cryptography dependency" in failed["cryptography"]["remediation"]
+
+
+def test_failed_replay_resumes_from_preserved_input_checkpoint(tmp_path: Path):
+    workspace = CaseWorkspace(tmp_path / "cases")
+    service = InvestigationService(workspace)
+    service.create_case(_case_metadata())
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text("not-json", encoding="utf-8")
+    request = RunRequest(
+        target="example.com", collection="replay", source_input=str(invalid),
+        export_pdf=False, export_dashboard=False, generate_graph=False,
+    )
+    try:
+        service.run_case("CASE-E2E", request)
+    except Exception:
+        pass
+    else:
+        raise AssertionError("invalid replay unexpectedly completed")
+    failed = service.list_runs("CASE-E2E")[0]
+    assert failed["status"] == "FAILED"
+    preserved = workspace.case_path("CASE-E2E") / failed["preserved_source_input"]
+    preserved.write_text(json.dumps([
+        {"type": "DOMAIN_NAME", "data": "example.com", "module": "fixture"}
+    ]), encoding="utf-8")
+    resumed = service.resume_run("CASE-E2E", failed["run_name"])
+    assert resumed["status"] == "COMPLETED"
+    retried = next(
+        run for run in service.list_runs("CASE-E2E")
+        if run.get("retry_of") == failed["run_name"]
+    )
+    assert retried["status"] == "COMPLETED"

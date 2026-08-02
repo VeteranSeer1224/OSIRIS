@@ -90,3 +90,9 @@ def test_osiris_without_subcommand_launches_wizard(monkeypatch):
     monkeypatch.setattr(osiris, "run_wizard", lambda **_kwargs: 17)
     assert osiris.main([]) == 17
     assert osiris.main(["wizard", "--cases-root", "/tmp/test-cases"]) == 17
+
+
+def test_terminal_choice_reprompts_after_invalid_input():
+    terminal = _io(["invalid", "9", "2"])
+    assert terminal.choose("Pick", [("a", "First"), ("b", "Second")]) == "b"
+    assert terminal.output.getvalue().count("Choose one of the numbered options") == 2

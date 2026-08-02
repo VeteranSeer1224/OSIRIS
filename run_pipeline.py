@@ -29,7 +29,7 @@ from case_authorization import (
 from evidence_store import LocalEvidenceStore
 from provenance import build_provenance
 from schemas.models import Dossier, RawScan
-from artifact_io import ArtifactIOError, atomic_write_json, require_empty_directory
+from artifact_io import ArtifactIOError, atomic_write_bytes, atomic_write_json, require_empty_directory
 from artifact_io import atomic_write_text
 from chain_of_custody import append_event, verify_chain
 from legal_support import generate_electronic_record_certificate
@@ -430,6 +430,7 @@ def pipeline_with_spiderfoot(
     mind_model=None,
     progress_callback: ProgressCallback | None = None,
     spiderfoot_timeout: float = 900,
+    checkpoint_path: str | Path | None = None,
 ):
     _progress(progress_callback, "authorization", 3, "Validating active-collection authorization")
     if not case_authorization_path:
@@ -452,6 +453,7 @@ def pipeline_with_spiderfoot(
         case_authorization_path=case_authorization_path,
         mind_backend=mind_backend, mind_model=mind_model,
         progress_callback=progress_callback, spiderfoot_timeout=spiderfoot_timeout,
+        checkpoint_path=checkpoint_path,
     ))
 
 
@@ -459,7 +461,7 @@ def _pipeline_with_spiderfoot_prepared(
     *, target, output_dir, do_export_pdf, do_export_misp, mind_dry_run,
     skip_graph, do_export_dashboard, modules, use_case,
     case_authorization_path, mind_backend, mind_model, progress_callback,
-    spiderfoot_timeout,
+    spiderfoot_timeout, checkpoint_path,
 ):
     output_dir = Path(output_dir).resolve()
 
@@ -473,6 +475,11 @@ def _pipeline_with_spiderfoot_prepared(
         use_case=use_case,
         timeout_seconds=spiderfoot_timeout,
     )
+    if checkpoint_path is not None:
+        checkpoint = Path(checkpoint_path).resolve()
+        if checkpoint.exists():
+            raise PipelineError("collector checkpoint destination already exists")
+        atomic_write_bytes(checkpoint, spiderfoot_output.read_bytes())
 
     results = pipeline_from_existing_scan(
         target,

@@ -15,7 +15,8 @@ the package entry point has not been installed.
 
 1. Run `osiris` and select **System preflight**. Resolve every `FAIL` using the
    remediation printed beside it.
-2. Select **Create a new case**. Enter the case ID, title, lawful purpose,
+2. Select **Create a new case**, or **Import and validate a case JSON file**.
+   For a new case, enter the case ID, title, lawful purpose,
    jurisdiction, investigator identity, organization, exact domain/IP targets,
    retention policy, handling marking, and optional source references/files.
 3. Create an authorization draft. Choose passive/replay or active collection,
@@ -27,16 +28,19 @@ the package entry point has not been installed.
 5. Select **Verify authorization**. Active collection remains unavailable if
    the artifact is draft, expired, out of scope, altered, or passive-only.
 6. Select **Run investigation pipeline**. Choose an authorized target and
-   either live SpiderFoot or a JSON/CSV replay. For live collection, choose a
+   either live SpiderFoot, a bundled offline fixture, or a JSON/CSV replay. For live collection, choose a
    bounded profile/module override and timeout. Choose dry, OpenRouter, or
-   Ollama analysis, then graph/PDF/dashboard options.
+   Ollama analysis, then graph/PDF/dashboard options. Active collection and a
+   potentially paid OpenRouter call each require their own human confirmation.
 7. Review the confirmation and start. Each stage prints a progress bar. Ctrl+C
    asks the collector to abort, cleans up its worker, and records `CANCELLED`.
 8. Review the final four labels: technical status, XAI audit status, release
    status, and output class. `REVIEW_ONLY`/`BLOCKED` output must not be
    disseminated.
 9. Use **Retry a failed or cancelled run** after correcting the reported
-   problem. Retry creates a new isolated run and links it to the original.
+   problem. Retry creates a new isolated run and links it to the original. A
+   validated replay input is reused; after live collection completes, its
+   preserved collector checkpoint is replayed rather than scanning again.
 10. Use **Evaluate release** only when an external trusted Ed25519 public key
     and signature over canonical authorization JSON are available. STIX/MISP
     exports are written only after the typed release context passes.

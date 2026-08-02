@@ -219,6 +219,7 @@ class OsirisWizard:
             self._welcome()
             action = self.io.choose("Main menu", [
                 ("new", "Create a new case"),
+                ("import", "Import and validate a case JSON file"),
                 ("open", "Open an existing case"),
                 ("list", "View case register"),
                 ("preflight", "System preflight"),
@@ -229,6 +230,8 @@ class OsirisWizard:
             try:
                 if action == "new":
                     self.create_case()
+                elif action == "import":
+                    self.import_case()
                 elif action == "open":
                     self.open_case()
                 elif action == "list":
@@ -297,6 +300,15 @@ class OsirisWizard:
         self.io.write(f"\nCase created: {path}")
         if self.io.confirm("Create its authorization draft now?", default=True):
             self.create_authorization(path)
+        self.case_menu(path)
+
+    def import_case(self) -> None:
+        self.io.clear()
+        self.io.heading("Import and validate a case")
+        source = self.io.ask("Case JSON file path")
+        result = self.service.import_case(source)
+        path = Path(result["path"])
+        self.io.write(f"Case imported and validated: {path}")
         self.case_menu(path)
 
     def _ask_list(self, prompt: str, *, minimum: int) -> list[str]:
@@ -526,11 +538,22 @@ class OsirisWizard:
         collection = self.io.choose("Evidence collection source", [
             ("live", "Authorized live SpiderFoot collection"),
             ("replay", "Existing SpiderFoot JSON/CSV export"),
+            ("fixture", "Bundled offline demonstration fixture"),
         ])
         source_path: Path | None = None
         use_case: str | None = None
         modules: str | None = None
-        if collection == "replay":
+        if collection == "fixture":
+            fixture_names = (
+                "spiderfoot_small.json", "spiderfoot_dns.json",
+                "spiderfoot_whois.json", "spiderfoot_full.json",
+            )
+            selected_fixture = self.io.choose(
+                "Select offline fixture", [(name, name) for name in fixture_names]
+            )
+            source_path = PROJECT_ROOT / "samples" / selected_fixture
+            collection = "replay"
+        elif collection == "replay":
             source_path = Path(self.io.ask("SpiderFoot JSON/CSV file path")).expanduser().resolve()
             if not source_path.is_file():
                 raise ValueError("source export does not exist")
@@ -557,6 +580,11 @@ class OsirisWizard:
         if llm_mode == "openrouter":
             model = self.io.ask("OpenRouter model", default="openai/gpt-oss-120b")
             self._ensure_secret("OPENROUTER_API_KEY", "OpenRouter API key")
+            if not self.io.confirm(
+                "This live OpenRouter request may incur provider charges. Continue?",
+                default=False,
+            ):
+                raise WizardCancelled("paid LLM call not confirmed")
         elif llm_mode == "ollama":
             model = self.io.ask("Ollama model", default="llama3.2")
 
@@ -564,6 +592,12 @@ class OsirisWizard:
         export_dashboard = self.io.confirm("Generate analyst dashboard?", default=True)
         generate_graph = self.io.confirm("Generate relationship graph?", default=True)
         self.io.write("Output class: REVIEW_ONLY. Release requires a separately verified typed release context.")
+
+        if collection == "live" and not self.io.confirm(
+            "Confirm authorized active network collection for this target now?",
+            default=False,
+        ):
+            raise WizardCancelled("active collection not confirmed")
 
         if not self.io.confirm("Start this investigation run now?", default=False):
             raise WizardCancelled("run not confirmed")
@@ -637,6 +671,8 @@ class OsirisWizard:
             line = f"{check['status']:<4}  {check['name']}"
             if check["status"] == "FAIL":
                 line += f": {check.get('detail')} — {check.get('remediation')}"
+            elif check.get("detail"):
+                line += f": {check['detail']}"
             self.io.write(line)
         self.io.write("INFO  OpenRouter key: configured" if os.getenv("OPENROUTER_API_KEY") else "INFO  OpenRouter key: requested only when needed")
         self.io.pause()

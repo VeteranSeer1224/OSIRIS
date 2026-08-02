@@ -93,6 +93,7 @@ class RunRequest:
     generate_graph: bool = True
     spiderfoot_timeout: float = 900
     output_class: str = "review-only"
+    authorization_mode: str | None = None
 
     def validate(self) -> "RunRequest":
         canonical_target(self.target)
@@ -106,6 +107,8 @@ class RunRequest:
             raise ValueError("spiderfoot_timeout must be between 1 and 86400")
         if self.output_class not in {"review-only", "release"}:
             raise ValueError("output_class must be review-only or release")
+        if self.authorization_mode not in {None, "passive", "active"}:
+            raise ValueError("authorization_mode must be passive or active")
         if self.output_class == "release":
             raise ValueError(
                 "release output requires a separately verified typed ReleaseContext; "
@@ -152,6 +155,29 @@ class InvestigationService:
 
     def list_cases(self) -> list[dict[str, Any]]:
         return self.workspace.list_cases()
+
+    def import_case(self, source_path: str) -> dict[str, Any]:
+        source = Path(source_path).expanduser().resolve()
+        if not source.is_file() or source.suffix.lower() != ".json":
+            raise ValueError("case import must be an existing JSON file")
+        if not 1 <= source.stat().st_size <= 1_000_000:
+            raise ValueError("case import must be between 1 byte and 1 MiB")
+        try:
+            value = json.loads(source.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"case import is invalid JSON: {exc}") from exc
+        if isinstance(value, dict) and isinstance(value.get("case"), dict):
+            value = value["case"]
+        if not isinstance(value, dict):
+            raise ValueError("case import root must be an object")
+        allowed = {
+            "case_id", "title", "purpose", "jurisdiction", "investigator",
+            "targets", "data_retention_policy", "handling_marking",
+        }
+        imported = {key: value[key] for key in allowed if key in value}
+        result = self.create_case(imported)
+        result["imported_from"] = str(source)
+        return result
 
     def get_case(self, case_id: str) -> dict[str, Any]:
         path, metadata = self.workspace.load(case_id)
@@ -289,6 +315,7 @@ class InvestigationService:
     def preflight(
         self, *, llm_mode: str = "dry", live_collection: bool = False,
         require_graph: bool = True, require_pdf: bool = True,
+        model: str | None = None,
     ) -> dict[str, Any]:
         _load_project_dotenv()
         checks: list[dict[str, Any]] = []
@@ -316,9 +343,26 @@ class InvestigationService:
             required_modules.append("weasyprint")
         for module in required_modules:
             check(module, lambda module=module: importlib.util.find_spec(module) or (_ for _ in ()).throw(ImportError(module)), f"Install the pinned {module} dependency.")
+        explabox_available = importlib.util.find_spec("explabox") is not None
+        checks.append({
+            "name": "xai_backend", "status": "PASS", "remediation": None,
+            "detail": (
+                "Explabox available for cohort descriptives; deterministic attribution remains active."
+                if explabox_available else
+                "Explabox unavailable; disclosed deterministic fallback will be used."
+            ),
+        })
         if llm_mode == "openrouter":
+            check("model_selection", lambda: (
+                isinstance(model, str) and 3 <= len(model) <= 200 and "/" in model
+            ) or (_ for _ in ()).throw(ValueError("select a provider/model identifier")), "Select an OpenRouter provider/model such as openai/gpt-oss-120b.")
             check("openai_sdk", lambda: importlib.util.find_spec("openai") or (_ for _ in ()).throw(ImportError("openai")), "Install the pinned OpenAI SDK.")
             check("openrouter_key", lambda: len(os.getenv("OPENROUTER_API_KEY", "")) >= 20 or (_ for _ in ()).throw(ValueError("OPENROUTER_API_KEY is missing or too short")), "Set OPENROUTER_API_KEY in the process or gitignored .env.")
+            def check_openrouter_network() -> None:
+                import requests
+                response = requests.get("https://openrouter.ai/api/v1/models", timeout=5)
+                response.raise_for_status()
+            check("openrouter_network", check_openrouter_network, "Verify DNS/TLS/network access to openrouter.ai, then retry.")
         elif llm_mode == "ollama":
             def check_ollama() -> None:
                 from urllib.parse import urlparse
@@ -329,6 +373,14 @@ class InvestigationService:
                     raise ValueError("OLLAMA_HOST is not a valid HTTP(S) URL")
                 response = requests.get(host.rstrip("/") + "/api/tags", timeout=3)
                 response.raise_for_status()
+                if not model:
+                    raise ValueError("select an installed Ollama model")
+                available = {
+                    str(item.get("name", "")).split(":", 1)[0]
+                    for item in response.json().get("models", []) if isinstance(item, dict)
+                }
+                if str(model).split(":", 1)[0] not in available:
+                    raise ValueError(f"Ollama model is not installed: {model}")
             check("ollama_runtime", check_ollama, "Start Ollama and verify OLLAMA_HOST, then retry.")
         if live_collection:
             import spiderfoot_runner
@@ -350,6 +402,7 @@ class InvestigationService:
         preflight = self.preflight(
             llm_mode=request.llm_mode, live_collection=request.collection == "live",
             require_graph=request.generate_graph, require_pdf=request.export_pdf,
+            model=request.model,
         )
         if preflight["status"] != "PASS":
             details = "; ".join(
@@ -362,7 +415,7 @@ class InvestigationService:
 
         auth_path = case_path / "authorization" / "authorization.json"
         selected_auth: Path | None = None
-        if request.collection == "live":
+        if request.collection == "live" or request.authorization_mode == "active":
             self.verify_authorization(case_id, target=request.target, active=True)
             selected_auth = auth_path
         elif auth_path.exists():
@@ -388,6 +441,9 @@ class InvestigationService:
             from run_pipeline import pipeline_from_existing_scan, pipeline_with_spiderfoot
             backend = "openrouter" if request.llm_mode == "openrouter" else "ollama"
             if request.collection == "live":
+                checkpoint = case_path / "inputs" / "checkpoints" / f"{run_name}-spiderfoot.json"
+                manifest["collection_checkpoint"] = str(checkpoint.relative_to(case_path))
+                atomic_write_json(manifest_path, manifest)
                 results = pipeline_with_spiderfoot(
                     request.target, run_dir, do_export_pdf=request.export_pdf,
                     mind_dry_run=request.llm_mode == "dry", mind_backend=backend,
@@ -396,6 +452,7 @@ class InvestigationService:
                     use_case=request.use_case, case_authorization_path=selected_auth,
                     progress_callback=progress_callback,
                     spiderfoot_timeout=request.spiderfoot_timeout,
+                    checkpoint_path=checkpoint,
                 )
             else:
                 source = Path(str(request.source_input)).expanduser().resolve()
@@ -404,6 +461,24 @@ class InvestigationService:
                 copied = case_path / "inputs" / f"{run_name}-{_safe_name(source.name)}"
                 shutil.copy2(source, copied)
                 manifest["preserved_source_input"] = str(copied.relative_to(case_path))
+                atomic_write_json(manifest_path, manifest)
+                from sense_clean import generate_raw_scan, load_spiderfoot_input
+                validated_source = load_spiderfoot_input(copied)
+                normalized_preview = generate_raw_scan(request.target, validated_source)
+                context_estimate = None
+                if request.llm_mode != "dry":
+                    from mind.mind_profile import build_llm_context
+                    bounded = build_llm_context(normalized_preview)
+                    context_estimate = len(json.dumps(
+                        bounded, ensure_ascii=False, default=str
+                    ).encode("utf-8"))
+                manifest["evidence_preflight"] = {
+                    "status": "PASS", "source_bytes": copied.stat().st_size,
+                    "normalized_entities": len(normalized_preview.get("entities", [])),
+                    "normalized_events": len(normalized_preview.get("events", [])),
+                    "estimated_llm_context_bytes": context_estimate,
+                    "maximum_llm_context_bytes": 100_000,
+                }
                 atomic_write_json(manifest_path, manifest)
                 results = pipeline_from_existing_scan(
                     request.target, copied, run_dir,
@@ -414,6 +489,10 @@ class InvestigationService:
                     case_authorization_path=selected_auth,
                     progress_callback=progress_callback,
                     case_id_override=case_id,
+                    collection_mode=(
+                        CollectionMode.ACTIVE if request.authorization_mode == "active"
+                        else CollectionMode.PASSIVE
+                    ),
                 )
             summary = self._summarize_results(run_name, results)
             manifest.update({
@@ -463,7 +542,9 @@ class InvestigationService:
                 manifests.append(value)
             except (OSError, json.JSONDecodeError):
                 manifests.append({"status": "INVALID", "manifest": str(path)})
-        return manifests
+        return sorted(
+            manifests, key=lambda item: str(item.get("started_at", "")), reverse=True
+        )
 
     def resume_run(
         self, case_id: str, run_name: str,
@@ -477,6 +558,14 @@ class InvestigationService:
         request_data = dict(manifest["request"])
         if manifest.get("preserved_source_input"):
             request_data["source_input"] = str(case_path / manifest["preserved_source_input"])
+        checkpoint_value = manifest.get("collection_checkpoint")
+        if checkpoint_value:
+            checkpoint = case_path / str(checkpoint_value)
+            if checkpoint.is_file():
+                request_data.update({
+                    "collection": "replay", "source_input": str(checkpoint),
+                    "use_case": None, "modules": None, "authorization_mode": "active",
+                })
         return self.run_case(
             case_id, RunRequest(**request_data),
             progress_callback=progress_callback, retry_of=run_name,
