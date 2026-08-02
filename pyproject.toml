@@ -37,6 +37,7 @@ osiris = "osiris:main"
 
 [tool.setuptools]
 py-modules = [
+  "artifact_io",
   "case_authorization",
   "chain_of_custody",
   "conference_demo",
@@ -48,6 +49,7 @@ py-modules = [
   "exports",
   "graph_build",
   "graph_utils",
+  "investigation_service",
   "legal_support",
   "osiris",
   "provenance",

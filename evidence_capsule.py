@@ -4,13 +4,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from artifact_io import atomic_write_bytes
 
 
 class CapsuleVerificationError(ValueError):
@@ -173,30 +176,37 @@ def build_capsule(
         raise FileExistsError("capsule destination must not already exist")
     _validate_source_files(source, Path(key_path))
     case_id, run_id, release_status = _derive_context(source)
-    capsule.mkdir(parents=True)
-    for path in sorted(p for p in source.rglob("*") if p.is_file()):
-        if capsule in path.parents:
-            continue
-        dest = capsule / path.relative_to(source)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, dest)
-    manifest = {
-        "schema_version": "1.0", "case_id": case_id, "run_id": run_id,
-        "release_status": release_status, "tool_version": tool_version,
-        "files": _manifest_entries(
-            capsule, case_id=case_id, run_id=run_id, tool_version=tool_version
-        ),
-    }
-    manifest_bytes = _canonical_json(manifest)
-    (capsule / MANIFEST_NAME).write_bytes(manifest_bytes)
-    key = _load_private_key(key_path)
-    signature = key.sign(manifest_bytes)
-    public_key = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    (capsule / SIGNATURE_NAME).write_bytes(_canonical_json({
-        "algorithm": "Ed25519", "mode": "local-development",
-        "signer_fingerprint": f"sha256:{hashlib.sha256(public_key).hexdigest()}",
-        "signature": base64.b64encode(signature).decode("ascii"),
-    }))
+    capsule.parent.mkdir(parents=True, exist_ok=True)
+    staging = capsule.with_name(f".{capsule.name}.in-progress-{uuid.uuid4().hex}")
+    staging.mkdir()
+    try:
+        for path in sorted(p for p in source.rglob("*") if p.is_file()):
+            if staging in path.parents:
+                continue
+            dest = staging / path.relative_to(source)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest)
+        manifest = {
+            "schema_version": "1.0", "case_id": case_id, "run_id": run_id,
+            "release_status": release_status, "tool_version": tool_version,
+            "files": _manifest_entries(
+                staging, case_id=case_id, run_id=run_id, tool_version=tool_version
+            ),
+        }
+        manifest_bytes = _canonical_json(manifest)
+        atomic_write_bytes(staging / MANIFEST_NAME, manifest_bytes)
+        key = _load_private_key(key_path)
+        signature = key.sign(manifest_bytes)
+        public_key = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        atomic_write_bytes(staging / SIGNATURE_NAME, _canonical_json({
+            "algorithm": "Ed25519", "mode": "local-development",
+            "signer_fingerprint": f"sha256:{hashlib.sha256(public_key).hexdigest()}",
+            "signature": base64.b64encode(signature).decode("ascii"),
+        }))
+        os.replace(staging, capsule)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return capsule
 
 

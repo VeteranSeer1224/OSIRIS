@@ -50,11 +50,16 @@ handles the complete operator workflow without requiring pipeline commands:
 6. Select live SpiderFoot or an existing JSON/CSV export.
 7. Select OpenRouter, Ollama or offline dry-run analysis.
 8. Run the stages with terminal progress and save every result in the case.
-9. Build and verify signed Evidence Capsules from completed runs.
+9. Retry failed/cancelled runs from preserved settings.
+10. Review separate technical, audit, and release status.
+11. Evaluate typed release context and gated STIX/MISP exports when external
+    authorization-signature evidence is available.
+12. Build and verify signed Evidence Capsules from completed runs.
 
 Case data is stored under `data/live_case/cases/<case-id>/` and is ignored by
-Git. Every run has its own `runs/<timestamp-id>/run.json`, including status,
-settings, results or the failure diagnostic. OpenRouter keys are requested with
+Git. Complete artifacts are atomically published under `runs/<timestamp-id>/`;
+settings, status, results, and failure diagnostics are stored separately under
+`run-records/<timestamp-id>.json`. OpenRouter keys are requested with
 hidden input only when needed; the investigator can keep the key in memory or
 save it to the gitignored `.env` with owner-only permissions.
 
@@ -62,7 +67,12 @@ Human approval is an explicit checkpoint. The wizard does not infer authority,
 and active collection cannot start without an approved, unexpired scope plus a
 matching copied authorization document and approval-record hash. This records
 an operator attestation; organizations requiring cryptographic identity or
-countersignature must add their approved signing workflow.
+countersignature must add their approved signing workflow. Wizard output is
+`REVIEW_ONLY` unless the separate typed release evaluation passes every gate.
+
+The complete operator guide, menus, automation equivalents, exit codes,
+artifacts, and recovery procedure are in
+[`docs/terminal_wizard_runbook.md`](docs/terminal_wizard_runbook.md).
 
 ### Evidence Capsule verification (local development)
 
@@ -83,33 +93,21 @@ The full pipeline runs all five stages in order:
 
 **Sense → Mind → Web → Conscience → Report**
 
-```bash
-python run_pipeline.py \
-  --target example.com \
-  --input samples/spiderfoot_full.json \
-  --output-dir outputs/ \
-  --export-pdf \
-  --export-misp
-```
+Use `osiris` and select **Create a new case**, then complete authorization and
+choose **Run investigation pipeline**. Investigators do not need to invoke
+stage scripts or type pipeline commands.
 
 By default Stage 2 uses **dry-run** mode (offline stub dossier, no LLM API call). Pass `--mind-live` to invoke a real LLM backend.
 
 ### OpenRouter with `openai/gpt-oss-120b`
 
-Copy `.env.example` to `.env`, add your OpenRouter key as `OPENROUTER_API_KEY`, then run Stage 2 live with the OpenRouter backend. The repository-local `.env` is loaded automatically and is ignored by Git; an environment variable takes precedence over `.env`.
+Copy `.env.example` to `.env` and add `OPENROUTER_API_KEY`, or let the wizard
+request it with hidden input. The repository-local `.env` is loaded
+automatically and ignored by Git; a process environment variable takes
+precedence.
 
-```bash
-python run_pipeline.py \
-  --target example.com \
-  --input samples/spiderfoot_small.json \
-  --output-dir outputs/ \
-  --mind-live \
-  --mind-backend openrouter
-```
-
-The default OpenRouter model is `openai/gpt-oss-120b`. Override it with `OPENROUTER_MODEL` in `.env` or `--mind-model provider/model` on the command line.
-
-Skip graph generation with `--skip-graph` if needed.
+The default OpenRouter model is `openai/gpt-oss-120b`; the wizard allows a
+different provider/model identifier at run configuration time.
 
 ### Stage 4 Only (Conscience)
 
@@ -139,8 +137,11 @@ Outputs:
 
 Stage 4 auto-selects an explainability backend:
 
-1. **ExplaboxBackend** — used when the `explabox` Python package is installed
-2. **FallbackBackend** — deterministic signed-weight attribution (always available)
+1. **ExplaboxBackend** — cohort descriptives when the package is installed
+2. **FallbackBackend** — deterministic checks when Explabox is unavailable
+
+Per-dossier attribution always uses deterministic signed weights. Every XAI
+artifact discloses the active backend and whether fallback is active.
 
 Force fallback: `USE_EXPLABOX_BACKEND=0 python explanation_card_build.py ...`
 
@@ -148,7 +149,8 @@ The rest of the pipeline does not depend on which backend is active.
 
 ### Limitations
 
-- Fairness testing uses **synthetic perturbation** only (name/region/domain swaps); no protected-class classifiers
+- Fairness testing is **inconclusive** when the evidence/cohort is insufficient;
+  it never claims a pass from a single synthetic comparison
 - Robustness testing perturbs dossier structure locally; no adversarial ML attacks
 - Explanations are generated only from dossier fields — no invented rationale
 - Explabox integration is bounded: cohort descriptives when available; per-dossier attribution uses signed weights

@@ -274,7 +274,7 @@ class InvestigationService:
                 checks.append({"name": name, "status": "FAIL", "detail": str(exc), "remediation": remediation})
 
         from run_pipeline import check_ethics_gate
-        check("python", lambda: sys.version_info >= (3, 11) or (_ for _ in ()).throw(ValueError(sys.version)), "Use Python 3.11 or newer.")
+        check("python", lambda: sys.version_info[:2] == (3, 12) or (_ for _ in ()).throw(ValueError(sys.version)), "Use the project-required Python 3.12 runtime.")
         check("ethics_acknowledgement", check_ethics_gate, "Acknowledge DISCLAIMER.md according to project policy.")
         check("case_workspace", lambda: os.access(self.workspace.root, os.W_OK) or (_ for _ in ()).throw(ValueError("not writable")), "Choose a writable --cases-root.")
         for module in ("pydantic", "pyvis", "weasyprint", "cryptography"):

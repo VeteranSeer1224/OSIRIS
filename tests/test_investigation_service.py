@@ -3,6 +3,9 @@ import json
 from pathlib import Path
 
 from investigation_service import InvestigationService, RunRequest
+from evidence_capsule import (
+    build_capsule, generate_development_key, verify_capsule, write_public_key,
+)
 from terminal_wizard import CaseWorkspace, OsirisWizard, TerminalIO
 
 
@@ -58,6 +61,10 @@ def test_offline_wizard_run_uses_shared_service_and_saves_complete_case_artifact
     raw_scan = json.loads((run_dir / "raw_scan.json").read_text(encoding="utf-8"))
     assert raw_scan["case_id"] == "CASE-E2E"
     assert "Technical=PASS" in output.getvalue()
+    private_key = generate_development_key(tmp_path / "capsule-key.pem")
+    public_key = write_public_key(private_key, tmp_path / "capsule-public.pem")
+    capsule = build_capsule(run_dir, tmp_path / "capsule", key_path=private_key)
+    assert verify_capsule(capsule, trusted_public_key=public_key)["status"] == "PASS"
 
 
 def test_case_service_rejects_unsupported_target_and_excessive_modules(tmp_path: Path):
